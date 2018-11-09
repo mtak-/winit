@@ -2,7 +2,8 @@
 
 use std::os::raw::c_void;
 
-use {MonitorHandle, Window, WindowBuilder};
+use monitor::MonitorHandle;
+use window::{Window, WindowBuilder};
 
 /// Additional methods on `Window` that are specific to iOS.
 pub trait WindowExtIOS {
@@ -10,6 +11,11 @@ pub trait WindowExtIOS {
     ///
     /// The pointer will become invalid when the `Window` is destroyed.
     fn get_uiwindow(&self) -> *mut c_void;
+
+    /// Returns a pointer to the `UIViewController` that is used by this window.
+    ///
+    /// The pointer will become invalid when the `Window` is destroyed.
+    fn get_uiviewcontroller(&self) -> *mut c_void;
 
     /// Returns a pointer to the `UIView` that is used by this window.
     ///
@@ -24,6 +30,11 @@ impl WindowExtIOS for Window {
     }
 
     #[inline]
+    fn get_uiviewcontroller(&self) -> *mut c_void {
+        self.window.get_uiviewcontroller() as _
+    }
+
+    #[inline]
     fn get_uiview(&self) -> *mut c_void {
         self.window.get_uiview() as _
     }
@@ -35,12 +46,32 @@ pub trait WindowBuilderExtIOS {
     ///
     /// The class will be initialized by calling `[root_view initWithFrame:CGRect]`
     fn with_root_view_class(self, root_view_class: *const c_void) -> WindowBuilder;
+
+    /// Hides the status bar when the `Window` is visible.
+    fn with_status_bar_hidden(self) -> WindowBuilder;
+    
+    /// Sets the `contentScaleFactor` of the underlying `UIWindow` to `content_scale_factor`.
+    /// 
+    /// The default value is the same is device dependent.
+    fn with_content_scale_factor(self, content_scale_factor: f64) -> WindowBuilder;
 }
 
 impl WindowBuilderExtIOS for WindowBuilder {
     #[inline]
     fn with_root_view_class(mut self, root_view_class: *const c_void) -> WindowBuilder {
         self.platform_specific.root_view_class = unsafe { &*(root_view_class as *const _) };
+        self
+    }
+
+    #[inline]
+    fn with_status_bar_hidden(mut self) -> WindowBuilder {
+        self.platform_specific.status_bar_hidden = true;
+        self
+    }
+
+    #[inline]
+    fn with_content_scale_factor(mut self, content_scale_factor: f64) -> WindowBuilder {
+        self.platform_specific.content_scale_factor = Some(content_scale_factor);
         self
     }
 }

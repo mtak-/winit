@@ -1,3 +1,9 @@
+#![cfg(not(any(
+    target_os = "android",
+    target_os = "emscripten",
+    target_os = "ios",
+)))]
+
 extern crate winit;
 
 use winit::window::WindowBuilder;
