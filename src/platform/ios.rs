@@ -40,6 +40,16 @@ impl WindowExtIOS for Window {
     }
 }
 
+/// The orientations supported on iOS.
+#[derive(Clone, Copy, Debug)]
+pub enum SupportedOrientations {
+    /// Excludes `PortraitUpsideDown` on iphone
+    LandscapeAndPortrait,
+    Landscape,
+    /// Excludes `PortraitUpsideDown` on iphone
+    Portrait,
+}
+
 /// Additional methods on `WindowBuilder` that are specific to iOS.
 pub trait WindowBuilderExtIOS {
     /// Sets the root view class used by the `Window`, otherwise a barebones `UIView` is provided.
@@ -54,6 +64,11 @@ pub trait WindowBuilderExtIOS {
     /// 
     /// The default value is the same is device dependent.
     fn with_content_scale_factor(self, content_scale_factor: f64) -> WindowBuilder;
+    
+    /// Sets the `contentScaleFactor` of the underlying `UIWindow` to `content_scale_factor`.
+    /// 
+    /// The default value is the same is device dependent.
+    fn with_supported_orientations(self, supported_orientations: SupportedOrientations) -> WindowBuilder;
 }
 
 impl WindowBuilderExtIOS for WindowBuilder {
@@ -72,6 +87,11 @@ impl WindowBuilderExtIOS for WindowBuilder {
     #[inline]
     fn with_content_scale_factor(mut self, content_scale_factor: f64) -> WindowBuilder {
         self.platform_specific.content_scale_factor = Some(content_scale_factor);
+        self
+    }
+
+    fn with_supported_orientations(mut self, supported_orientations: SupportedOrientations) -> WindowBuilder {
+        self.platform_specific.supported_orientations = supported_orientations;
         self
     }
 }

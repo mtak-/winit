@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::{mem, ptr};
-use std::rc::Rc;
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::time::Instant;
 
@@ -14,6 +13,7 @@ use event_loop::{
     EventLoopClosed,
 };
 
+use platform_impl::platform::app_state::AppState;
 use platform_impl::platform::ffi::{
     nil,
     CFAbsoluteTimeGetCurrent,
@@ -46,11 +46,10 @@ use platform_impl::platform::ffi::{
 };
 use platform_impl::platform::monitor;
 use platform_impl::platform::MonitorHandle;
-use platform_impl::platform::shared::{ConfiguredWindow, Running, Shared};
 use platform_impl::platform::view;
 
 pub struct EventLoop<T: 'static> {
-    pub shared: Rc<RefCell<Shared>>,
+    pub app_state: RefCell<AppState>,
     receiver: Receiver<T>,
     waker: EventLoopWaker,
     sender_to_clone: Sender<T>,
@@ -60,14 +59,14 @@ impl<T: 'static> EventLoop<T> {
     pub fn new() -> EventLoop<T> {
         static mut SINGLETON_INIT: bool = false;
         unsafe {
+            assert_main_thread!("`EventLoop` can only be created on the main thread on iOS");
             assert!(!SINGLETON_INIT, "Only one `EventLoop` is supported on iOS. \
                 `EventLoopProxy` might be helpful");
-            assert_main_thread!("`EventLoop` can only be created on the main thread on iOS");
             SINGLETON_INIT = true;
             view::create_delegate_class();
         }
 
-        let shared = Rc::default();
+        let app_state = RefCell::default();
         let (sender_to_clone, receiver) = mpsc::channel();
 
         // this line sets up the main run loop before `UIApplicationMain`
@@ -76,7 +75,7 @@ impl<T: 'static> EventLoop<T> {
         let waker = EventLoopWaker::new(unsafe { CFRunLoopGetMain() });
 
         EventLoop {
-            shared,
+            app_state,
             receiver,
             waker,
             sender_to_clone,
@@ -92,7 +91,7 @@ impl<T: 'static> EventLoop<T> {
             assert_eq!(application, ptr::null_mut(), "\
                 `EventLoop` cannot be `run` after a call to `UIApplicationMain` on iOS\n\
                 Note: `EventLoop::run` calls `UIApplicationMain` on iOS");
-            assert!(EVENT_HANDLER.is_none(), "multiple `EventLoop`s are unsupported on iOS");
+            debug_assert!(EVENT_HANDLER.is_none(), "multiple `EventLoop`s are unsupported on iOS");
             EVENT_HANDLER = Some(Box::into_raw(Box::new(EventLoopHandler::new(
                 event_handler,
                 self,
@@ -148,6 +147,13 @@ impl<T> Drop for EventLoopProxy<T> {
 impl<T> EventLoopProxy<T> {
     fn new(sender: Sender<T>) -> EventLoopProxy<T> {
         unsafe {
+            extern "C" fn event_loop_proxy_handler(_: *mut c_void) {
+                unsafe {
+                    let callback = &mut *EVENT_HANDLER.expect("attempt to process an event without a running `EventLoop`");
+                    callback.handle_user_events();
+                }
+            }
+
             // adding a Source to the main CFRunLoop lets us wake it up and
             // process user events through the normal OS EventLoop mechanisms.
             let rl = CFRunLoopGetMain();
@@ -251,9 +257,10 @@ fn setup_control_flow_observers() {
     }
 }
 
-pub unsafe fn run<F: FnOnce(&ConfiguredWindow) -> Running>(f: F) {
-    let mut shared = (&*EVENT_HANDLER.unwrap()).shared().borrow_mut();
-    shared.run(f)
+// requires main thread
+pub unsafe fn did_finish_launching() {
+    let mut app_state = (&*EVENT_HANDLER.unwrap()).app_state().borrow_mut();
+    app_state.did_finish_launching()
 }
 
 #[derive(Debug)]
@@ -277,7 +284,7 @@ impl From<Event<()>> for RawEvent {
 trait EventHandler {
     fn handle_nonuser_event(&mut self, event: RawEvent);
     fn handle_user_events(&mut self);
-    fn shared(&self) -> &RefCell<Shared>;
+    fn app_state(&self) -> &RefCell<AppState>;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -307,28 +314,28 @@ struct EventLoopHandler<F, T: 'static> {
 }
 
 macro_rules! bug {
-    () => {
-        panic!("bug in winit, please file an issue")
+    ($msg:expr) => {
+        panic!("winit iOS bug, file an issue: {}", $msg)
     };
 }
 
 macro_rules! debug_bug {
-    () => {
+    ($msg:expr) => {
         if cfg!(debug_assertions) {
-            bug!()
+            bug!($msg)
         }
     };
 }
 
 macro_rules! debug_bug_assert {
-    ($e:expr) => {
-        debug_assert!($e, "bug in winit, please file an issue")
+    ($e:expr, $msg:expr) => {
+        debug_assert!($e, "winit iOS bug, file an issue: {}", $msg)
     };
 }
 
 macro_rules! debug_bug_assert_eq {
-    ($e0:expr, $e1:expr) => {
-        debug_assert_eq!($e0, $e1, "bug in winit, please file an issue")
+    ($e0:expr, $e1:expr, $msg:expr) => {
+        debug_assert_eq!($e0, $e1, "winit iOS bug, file an issue: {}", $msg)
     };
 }
 
@@ -347,47 +354,45 @@ where
         }
     }
 
-    // TODO: this could have a more meaningful name
-    // it's primary purpose is to track state transitions in the OS EventLoop
-    fn raw_to_typed_event(&mut self, raw_event: RawEvent) -> (Event<T>, Option<ControlFlow>) {
+    fn handle_loop_state_transition(&mut self, raw_event: RawEvent) -> (Event<T>, Option<ControlFlow>) {
         (match (raw_event, self.control_flow) {
-            (_, ControlFlow::Exit) | (RawEvent::Exit, _) | (RawEvent::Poll, _) => bug!(),
+            (r, ControlFlow::Exit) | (r@RawEvent::Exit, _) | (r@RawEvent::Poll, _) => {
+                bug!(format!("unexpected ControlFlow {:?} {:?}", r, self.control_flow))
+            }
             (RawEvent::Init, ControlFlow::Poll) => {
-                debug_bug_assert_eq!(self.loop_state, LoopState::Uninitialized);
-                debug_bug_assert!(self.start.is_none());
+                debug_bug_assert_eq!(self.loop_state, LoopState::Uninitialized, "`Init` sent more than once");
+                debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
                 self.loop_state = LoopState::Running {
                     active_control_flow: ControlFlow::Poll
                 };
                 self.event_loop.event_loop.waker.start();
                 Event::NewEvents(StartCause::Init)
             }
-            (RawEvent::Init, _) => bug!(),
+            (RawEvent::Init, other) => bug!(format!("`Init` sent with unexpected control flow {:?}", other)),
             (RawEvent::WaitCancelled, ControlFlow::Poll) => {
-                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning);
-                debug_bug_assert!(self.start.is_none());
+                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning, "Resuming a resumed EventLoop");
+                debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
                 self.loop_state = LoopState::Running {
                     active_control_flow: ControlFlow::Poll
                 };
                 Event::NewEvents(StartCause::Poll)
             }
             (RawEvent::WaitCancelled, ControlFlow::Wait) => {
-                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning);
-                debug_bug_assert!(self.start.is_some());
+                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning, "Resuming a resumed EventLoop");
                 self.loop_state = LoopState::Running {
                     active_control_flow: ControlFlow::Wait
                 };
                 Event::NewEvents(StartCause::WaitCancelled {
-                    start: self.start.take().expect("bug in winit, please file an issue"),
+                    start: self.start.take().expect("winit iOS bug, file an issue: `EventHandler` expected `start` time, found `None`"),
                     requested_resume: None,
                 })
             }
             (RawEvent::WaitCancelled, ControlFlow::WaitUntil(requested_resume)) => {
-                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning);
-                debug_bug_assert!(self.start.is_some());
+                debug_bug_assert_eq!(self.loop_state, LoopState::NotRunning, "Resuming a resumed EventLoop");
                 self.loop_state = LoopState::Running {
                     active_control_flow: ControlFlow::WaitUntil(requested_resume)
                 };
-                let start = self.start.take().expect("bug in winit, please file an issue");
+                let start = self.start.take().expect("winit iOS bug, file an issue: `EventHandler` expected `start` time, found `None`");
                 if Instant::now() >= requested_resume {
                     Event::NewEvents(StartCause::ResumeTimeReached {
                         start,
@@ -401,18 +406,18 @@ where
                 }
             }
             (RawEvent::EventsCleared, _) => {
-                debug_bug_assert!(self.start.is_none());
+                debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
                 if let LoopState::Running { active_control_flow } = self.loop_state {
                     self.loop_state = LoopState::NotRunning;
                     return (Event::EventsCleared, Some(active_control_flow))
                 } else {
-                    bug!()
+                    bug!("`EventsCleared` sent for an `EventLoop` that is not currently processing events")
                 }
             }
             (RawEvent::Event(event), _) => {
-                debug_bug_assert!(self.loop_state.is_running());
-                debug_bug_assert!(self.start.is_none());
-                event.map_nonuser_event().expect("bug in winit, please file an issue")
+                debug_bug_assert!(self.loop_state.is_running(), "`Event` sent for an `EventLoop` that is not currently processing events");
+                debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
+                event.map_nonuser_event().expect("Failed to `map_nonuser_event`")
             }
         }, None)
     }
@@ -432,13 +437,13 @@ where
                 self.start = Some(Instant::now());
                 self.event_loop.event_loop.waker.start_at(new_instant)
             }
-            (_, ControlFlow::Poll) => {
-                self.event_loop.event_loop.waker.start()
-            }
+            (_, ControlFlow::Poll) => self.event_loop.event_loop.waker.start(),
             (_, ControlFlow::Exit) => {
+                // https://developer.apple.com/library/archive/qa/qa1561/_index.html
+                // it is not possible to quit an iOS app gracefully and programatically
                 warn!("`ControlFlow::Exit` ignored on iOS");
                 self.control_flow = old
-            },
+            }
         }
     }
 }
@@ -451,21 +456,21 @@ where
     fn handle_nonuser_event(&mut self, event: RawEvent) {
         match (&self.loop_state, event) {
             (LoopState::Uninitialized, RawEvent::Init) => {
-                let (event, ecf) = self.raw_to_typed_event(RawEvent::Init);
-                debug_bug_assert!(ecf.is_none());
+                let (event, ecf) = self.handle_loop_state_transition(RawEvent::Init);
+                debug_bug_assert!(ecf.is_none(), "Unexpected expiring `ControlFlow` during `Init`");
                 (self.f)(
                     event,
                     &self.event_loop,
                     &mut self.control_flow,
                 );
-                // handle any user events that came in before the Initialization event
+                // handle any user events that came in before Init
                 self.handle_user_events()
             }
             (LoopState::Uninitialized, _) => {
                 // we ignore events until Init is sent (buffering up user events)
             }
             (_, event) => {
-                let (event, expiring_control_flow) = self.raw_to_typed_event(event);
+                let (event, expiring_control_flow) = self.handle_loop_state_transition(event);
                 (self.f)(
                     event,
                     &self.event_loop,
@@ -481,9 +486,9 @@ where
     fn handle_user_events(&mut self) {
         match &self.loop_state {
             &LoopState::Uninitialized => {} // ignored, see handle_nonuser_event
-            &LoopState::NotRunning => debug_bug!(),
+            &LoopState::NotRunning => debug_bug!("User event sent for an `EventLoop` that is not currently processing events"),
             &LoopState::Running {..} => {
-                debug_bug_assert!(self.start.is_none());
+                debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
                 for event in self.event_loop.event_loop.receiver.try_iter() {
                     (self.f)(
                         Event::UserEvent(event),
@@ -495,8 +500,8 @@ where
         }
     }
 
-    fn shared(&self) -> &RefCell<Shared> {
-        &self.event_loop.event_loop.shared
+    fn app_state(&self) -> &RefCell<AppState> {
+        &self.event_loop.event_loop.app_state
     }
 }
 
@@ -513,13 +518,6 @@ pub unsafe fn process_erased_event<E: Into<RawEvent>>(event: E) {
     }
 }
 
-extern "C" fn event_loop_proxy_handler(_: *mut c_void) {
-    unsafe {
-        let callback = &mut *EVENT_HANDLER.expect("attempt to process an event without a running `EventLoop`");
-        callback.handle_user_events();
-    }
-}
-
 struct EventLoopWaker {
     timer: CFRunLoopTimerRef,
 }
@@ -528,7 +526,7 @@ impl EventLoopWaker {
     fn new(rl: CFRunLoopRef) -> EventLoopWaker {
         extern fn wakeup_main_loop(_timer: CFRunLoopTimerRef, _info: *mut c_void) {}
         unsafe {
-            // create a timer with a 1microsec interval (1ns breaks) to mimic polling.
+            // create a timer with a 1microsec interval (1ns does not work) to mimic polling.
             // it is initially setup with a first fire time really far into the
             // future, but that gets changed to fire immediatley in did_finish_launching
             let timer = CFRunLoopTimerCreate(

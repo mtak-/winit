@@ -47,10 +47,8 @@
 //!
 //! This is how those event are represented in winit:
 //!
-//!  - applicationDidBecomeActive is Focused(true)
-//!  - applicationWillResignActive is Focused(false)
-//!  - applicationDidEnterBackground is Suspended(true)
-//!  - applicationWillEnterForeground is Suspended(false)
+//!  - applicationDidBecomeActive is Suspended(false)
+//!  - applicationWillResignActive is Suspended(true)
 //!  - applicationWillTerminate is LoopDestroyed
 //!
 //! Keep in mind that after LoopDestroyed event is received every attempt to draw with
@@ -68,10 +66,10 @@ macro_rules! assert_main_thread {
     };
 }
 
+mod app_state;
 mod event_loop;
 mod ffi;
 mod monitor;
-mod shared;
 mod view;
 mod window;
 
@@ -84,4 +82,9 @@ pub use self::window::{
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId;
+pub struct DeviceId {
+    uiscreen: ffi::id,
+}
+
+unsafe impl Send for DeviceId {}
+unsafe impl Sync for DeviceId {}

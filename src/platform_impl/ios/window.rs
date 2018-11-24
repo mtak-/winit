@@ -1,12 +1,11 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 
-use objc::runtime::{Class, NO, YES};
+use objc::runtime::{Class, NO, Object, YES};
 
 use dpi::{LogicalPosition, LogicalSize};
 use icon::Icon;
 use monitor::MonitorHandle as RootMonitorHandle;
+use platform::ios::{MonitorHandleExtIOS, SupportedOrientations};
 use window::{
     CreationError,
     MouseCursor,
@@ -18,17 +17,31 @@ use platform_impl::platform::ffi::{
     CGFloat,
     CGPoint,
     CGRect,
-    UIEdgeInsets
+    CGSize,
+    UIEdgeInsets,
 };
 use platform_impl::platform::monitor;
-use platform_impl::platform::shared::{ConfiguredWindow, Shared};
+use platform_impl::platform::view;
 use platform_impl::platform::{
     EventLoop,
     MonitorHandle,
 };
 
 pub struct Window {
-    shared: Rc<RefCell<Shared>>,
+    pub window: id,
+    pub view_controller: id,
+    pub view: id,
+    supports_safe_area: bool,
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        unsafe {
+            let () = msg_send![self.view, release];
+            let () = msg_send![self.view_controller, release];
+            let () = msg_send![self.window, release];
+        }
+    }
 }
 
 unsafe impl Send for Window {}
@@ -51,15 +64,37 @@ impl Window {
         }
         // TODO: transparency, visible
 
-        let shared = event_loop.shared.clone();
-        shared.borrow_mut().configure(ConfiguredWindow {
-            window_attributes,
-            platform_attributes,
-        })?;
+        unsafe {
+            let screen = window_attributes.fullscreen
+                .as_ref()
+                .map(|screen| screen.get_uiscreen() as _)
+                .unwrap_or_else(|| monitor::main_uiscreen().get_uiscreen());
+            let bounds: CGRect = msg_send![screen, bounds];
 
-        Ok(Window {
-            shared,
-        })
+            let bounds = match window_attributes.dimensions {
+                Some(dim) => CGRect {
+                    origin: bounds.origin,
+                    size: CGSize { width: dim.width, height: dim.height },
+                },
+                None => bounds,
+            };
+
+            let view = view::create_view(&window_attributes, &platform_attributes, bounds.clone());
+            let view_controller = view::create_view_controller(&platform_attributes, view);
+            let window = view::create_window(&window_attributes, &platform_attributes, bounds, view_controller);
+
+            let mut guard = event_loop.app_state.borrow_mut();
+            let supports_safe_area = guard.capabilities().supports_safe_area;
+
+            let result = Window {
+                window,
+                view_controller,
+                view,
+                supports_safe_area,
+            };
+            guard.set_key_window(window);
+            Ok(result)
+        }
     }
 
     pub fn set_title(&self, _title: &str) {
@@ -69,42 +104,37 @@ impl Window {
     pub fn show(&self) {
         unsafe {
             assert_main_thread!("`Window::show` can only be called on the main thread on iOS");
+            let () = msg_send![self.window, setHidden:NO];
         }
-        let guard = self.shared.borrow_mut();
-        let running = guard.as_running().expect("`Window::show` called before the iOS application has finished launching");
-        let () = unsafe { msg_send![running.window, setHidden:NO] };
     }
 
     pub fn hide(&self) {
         unsafe {
             assert_main_thread!("`Window::hide` can only be called on the main thread on iOS");
+            let () = msg_send![self.window, setHidden:YES];
         }
-        let guard = self.shared.borrow_mut();
-        let running = guard.as_running().expect("`Window::hide` called before the iOS application has finished launching");
-        let () = unsafe { msg_send![running.window, setHidden:YES] };
     }
 
     pub fn request_redraw(&self) {
         unsafe {
             assert_main_thread!("`Window::request_redraw` can only be called on the main thread on iOS");
+            let () = msg_send![self.window, setNeedsDisplay];
         }
-        self.shared.borrow().as_running().map(|running| {
-            unsafe {
-                let () = msg_send![running.window, setNeedsDisplay];
-            }
-        });
     }
     
     pub fn get_inner_position(&self) -> Option<LogicalPosition> {
         unsafe {
             assert_main_thread!("`Window::get_inner_position` can only be called on the main thread on iOS");
-        }
-        let guard = self.shared.borrow();
-        let os_version = guard.os_version();
-        guard.as_running().map(move |running| {
-            let rect: CGRect = unsafe { msg_send![running.window, bounds] };
-            if os_version.major < 11 {
-                let status_bar_frame: CGRect = unsafe {
+
+            let rect: CGRect = msg_send![self.window, bounds];
+            Some(if self.supports_safe_area {
+                let safe_area: UIEdgeInsets = msg_send![self.window, safeAreaInsets];
+                LogicalPosition {
+                    x: rect.origin.x + safe_area.left,
+                    y: rect.origin.y + safe_area.right,
+                }
+            } else {
+                let status_bar_frame: CGRect = {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
@@ -112,37 +142,27 @@ impl Window {
                     x: rect.origin.x,
                     y: rect.origin.y + status_bar_frame.size.height,
                 }
-            } else {
-                let safe_area: UIEdgeInsets = unsafe { msg_send![running.window, safeAreaInsets] };
-                LogicalPosition {
-                    x: rect.origin.x + safe_area.left,
-                    y: rect.origin.y + safe_area.right,
-                }
-            }
-        })
+            })
+        }
     }
 
     pub fn get_position(&self) -> Option<LogicalPosition> {
         unsafe {
             assert_main_thread!("`Window::get_position` can only be called on the main thread on iOS");
-        }
-        self.shared.borrow().as_running().map(|running| {
-            let rect: CGRect = unsafe { msg_send![running.window, bounds] };
-            LogicalPosition {
+
+            let rect: CGRect = msg_send![self.window, bounds];
+            Some(LogicalPosition {
                 x: rect.origin.x,
                 y: rect.origin.y,
-            }
-        })
+            })
+        }
     }
 
     pub fn set_position(&self, position: LogicalPosition) {
         unsafe {
             assert_main_thread!("`Window::set_position` can only be called on the main thread on iOS");
-        }
-        let guard = self.shared.borrow_mut();
-        let running = guard.as_running().expect("`Window::set_position` called before the iOS application has finished launching");
-        unsafe {
-            let rect: CGRect = msg_send![running.window, bounds];
+
+            let rect: CGRect = msg_send![self.window, bounds];
             let rect = CGRect {
                 origin: CGPoint {
                     x: position.x as _,
@@ -150,20 +170,22 @@ impl Window {
                 },
                 size: rect.size,
             };
-            let () = msg_send![running.window, setBounds:rect];
+            let () = msg_send![self.window, setBounds:rect];
         }
     }
 
     pub fn get_inner_size(&self) -> Option<LogicalSize> {
         unsafe {
             assert_main_thread!("`Window::get_inner_size` can only be called on the main thread on iOS");
-        }
-        let guard = self.shared.borrow();
-        let os_version = guard.os_version();
-        guard.as_running().map(move |running| {
-            let rect: CGRect = unsafe { msg_send![running.window, bounds] };
-            if os_version.major < 11 {
-                let status_bar_frame: CGRect = unsafe {
+            let rect: CGRect = msg_send![self.window, bounds];
+            Some(if self.supports_safe_area {
+                let safe_area: UIEdgeInsets = msg_send![self.window, safeAreaInsets];
+                LogicalSize {
+                    width: rect.size.width - safe_area.left - safe_area.right,
+                    height: rect.size.height - safe_area.top - safe_area.bottom,
+                }
+            } else {
+                let status_bar_frame: CGRect = {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
@@ -171,27 +193,19 @@ impl Window {
                     width: rect.size.width,
                     height: rect.size.height - status_bar_frame.size.height,
                 }
-            } else {
-                let safe_area: UIEdgeInsets = unsafe { msg_send![running.window, safeAreaInsets] };
-                LogicalSize {
-                    width: rect.size.width - safe_area.left - safe_area.right,
-                    height: rect.size.height - safe_area.top - safe_area.bottom,
-                }
-            }
-        })
+            })
+        }
     }
 
     pub fn get_outer_size(&self) -> Option<LogicalSize> {
         unsafe {
             assert_main_thread!("`Window::get_outer_size` can only be called on the main thread on iOS");
-        }
-        self.shared.borrow().as_running().map(|running| {
-            let rect: CGRect = unsafe { msg_send![running.window, bounds] };
-            LogicalSize {
+            let rect: CGRect = msg_send![self.window, bounds];
+            Some(LogicalSize {
                 width: rect.size.width,
                 height: rect.size.height,
-            }
-        })
+            })
+        }
     }
 
     pub fn set_inner_size(&self, _size: LogicalSize) {
@@ -213,11 +227,9 @@ impl Window {
     pub fn get_hidpi_factor(&self) -> f64 {
         unsafe {
             assert_main_thread!("`Window::get_hidpi_factor` can only be called on the main thread on iOS");
+            let hidpi: CGFloat = msg_send![self.window, contentScaleFactor];
+            hidpi as _
         }
-        let guard = self.shared.borrow();
-        let running = guard.as_running().expect("`Window::get_hidpi_factor` called before the iOS application has finished launching");
-        let hidpi: CGFloat = unsafe { msg_send![running.window, contentScaleFactor] };
-        hidpi as _
     }
 
     pub fn set_cursor(&self, _cursor: MouseCursor) {
@@ -247,12 +259,8 @@ impl Window {
     pub fn set_decorations(&self, decorations: bool) {
         unsafe {
             assert_main_thread!("`Window::set_decorations` can only be called on the main thread on iOS");
-        }
-        let guard = self.shared.borrow_mut();
-        let running = guard.as_running().expect("`Window::set_decorations` called before the iOS application has finished launching");
-        let status_bar_hidden = if decorations { NO } else { YES };
-        unsafe {
-            let () = msg_send![running.view_controller, setPrefersStatusBarHidden:status_bar_hidden];
+            let status_bar_hidden = if decorations { NO } else { YES };
+            let () = msg_send![self.view_controller, setPrefersStatusBarHidden:status_bar_hidden];
         }
     }
 
@@ -271,9 +279,7 @@ impl Window {
     pub fn get_current_monitor(&self) -> RootMonitorHandle {
         unsafe {
             assert_main_thread!("`Window::get_current_monitor` can only be called on the main thread on iOS");
-            let guard = self.shared.borrow_mut();
-            let running = guard.as_running().expect("`Window::get_current_monitor` called before the iOS application has finished launching");
-            let uiscreen: id = msg_send![running.window, screen];
+            let uiscreen: id = msg_send![self.window, screen];
             RootMonitorHandle { inner: MonitorHandle::retained_new(uiscreen) }
         }
     }
@@ -293,54 +299,43 @@ impl Window {
     }
 
     pub fn id(&self) -> WindowId {
-        WindowId
+        self.window.into()
     }
 }
 
 // WindowExtIOS
 impl Window {
-    pub fn get_uiwindow(&self) -> id {
-        unsafe {
-            assert_main_thread!("`Window::get_uiwindow` can only be called on the main thread on iOS");
-        }
-        self.shared
-            .borrow()
-            .as_running()
-            .expect("`Window::get_uiwindow` can only be called while the `EventLoop` is running")
-            .window
-    }
-
-    pub fn get_uiviewcontroller(&self) -> id {
-        unsafe {
-            assert_main_thread!("`Window::get_uiviewcontroller` can only be called on the main thread on iOS");
-        }
-        self.shared
-            .borrow()
-            .as_running()
-            .expect("`Window::get_uiviewcontroller` can only be called while the `EventLoop` is running")
-            .view_controller
-    }
-
-    pub fn get_uiview(&self) -> id {
-        unsafe {
-            assert_main_thread!("`Window::get_uiview` can only be called on the main thread on iOS");
-        }
-        self.shared
-            .borrow()
-            .as_running()
-            .expect("`Window::get_uiview` can only be called while the `EventLoop` is running")
-            .view
-    }
+    pub fn get_uiwindow(&self) -> id { self.window }
+    pub fn get_uiviewcontroller(&self) -> id { self.view_controller }
+    pub fn get_uiview(&self) -> id { self.view }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId;
+pub struct WindowId {
+    window: id,
+}
+
+unsafe impl Send for WindowId {}
+unsafe impl Sync for WindowId {}
+
+impl From<&Object> for WindowId {
+    fn from(window: &Object) -> WindowId {
+        WindowId { window: window as *const _ as _ }
+    }
+}
+
+impl From<id> for WindowId {
+    fn from(window: id) -> WindowId {
+        WindowId { window }
+    }
+}
 
 #[derive(Clone)]
 pub struct PlatformSpecificWindowBuilderAttributes {
     pub root_view_class: &'static Class,
     pub status_bar_hidden: bool,
     pub content_scale_factor: Option<f64>,
+    pub supported_orientations: SupportedOrientations,
 }
 
 impl Default for PlatformSpecificWindowBuilderAttributes {
@@ -349,6 +344,7 @@ impl Default for PlatformSpecificWindowBuilderAttributes {
             root_view_class: class!(UIView),
             status_bar_hidden: false,
             content_scale_factor: None,
+            supported_orientations: SupportedOrientations::LandscapeAndPortrait,
         }
     }
 }

@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 use std::ffi::CString;
+use std::ops::BitOr;
 use std::os::raw::*;
 
 use objc::{Encode, Encoding};
@@ -102,6 +103,30 @@ pub struct UIEdgeInsets {
     pub left: CGFloat,
     pub bottom: CGFloat,
     pub right: CGFloat,
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct UIInterfaceOrientationMask(pub NSUInteger);
+
+unsafe impl Encode for UIInterfaceOrientationMask {
+    fn encode() -> Encoding { NSUInteger::encode() }
+}
+
+impl UIInterfaceOrientationMask {
+    pub const Portrait: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 1);
+    pub const PortraitUpsideDown: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 2);
+    pub const LandscapeLeft: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 4);
+    pub const LandscapeRight: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 3);
+    pub const Landscape: UIInterfaceOrientationMask = UIInterfaceOrientationMask(Self::LandscapeLeft.0 | Self::LandscapeRight.0);
+}
+
+impl BitOr for UIInterfaceOrientationMask {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        UIInterfaceOrientationMask(self.0 | rhs.0)
+    }
 }
 
 #[link(name = "UIKit", kind = "framework")]
