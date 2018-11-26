@@ -241,6 +241,7 @@ pub unsafe fn create_view(
 
 // requires main thread
 pub unsafe fn create_view_controller(
+    window_attributes: &WindowAttributes,
     platform_attributes: &PlatformSpecificWindowBuilderAttributes,
     view: id,
 ) -> id {
@@ -250,10 +251,10 @@ pub unsafe fn create_view_controller(
     assert!(!view_controller.is_null(), "Failed to create `UIViewController` instance");
     let view_controller: id = msg_send![view_controller, init];
     assert!(!view_controller.is_null(), "Failed to initialize `UIViewController` instance");
-    let status_bar_hidden = if platform_attributes.status_bar_hidden {
-        YES
-    } else {
+    let status_bar_hidden = if window_attributes.decorations {
         NO
+    } else {
+        YES
     };
     let () = msg_send![view_controller, setPrefersStatusBarHidden:status_bar_hidden];
     let supported_orientations = match platform_attributes.supported_orientations {

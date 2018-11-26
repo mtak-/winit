@@ -73,7 +73,7 @@ mod monitor;
 mod view;
 mod window;
 
-pub use self::event_loop::{EventLoop, EventLoopProxy};
+pub use self::event_loop::{EventLoop, EventLoopProxy, EventLoopWindowTarget};
 pub use self::monitor::MonitorHandle;
 pub use self::window::{
     PlatformSpecificWindowBuilderAttributes,

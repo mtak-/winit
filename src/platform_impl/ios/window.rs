@@ -23,7 +23,7 @@ use platform_impl::platform::ffi::{
 use platform_impl::platform::monitor;
 use platform_impl::platform::view;
 use platform_impl::platform::{
-    EventLoop,
+    EventLoopWindowTarget,
     MonitorHandle,
 };
 
@@ -49,7 +49,7 @@ unsafe impl Sync for Window {}
 
 impl Window {
     pub fn new<T>(
-        event_loop: &EventLoop<T>,
+        event_loop: &EventLoopWindowTarget<T>,
         window_attributes: WindowAttributes,
         platform_attributes: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {
@@ -80,7 +80,7 @@ impl Window {
             };
 
             let view = view::create_view(&window_attributes, &platform_attributes, bounds.clone());
-            let view_controller = view::create_view_controller(&platform_attributes, view);
+            let view_controller = view::create_view_controller(&window_attributes, &platform_attributes, view);
             let window = view::create_window(&window_attributes, &platform_attributes, bounds, view_controller);
 
             let mut guard = event_loop.app_state.borrow_mut();
@@ -131,17 +131,20 @@ impl Window {
                 let safe_area: UIEdgeInsets = msg_send![self.window, safeAreaInsets];
                 LogicalPosition {
                     x: rect.origin.x + safe_area.left,
-                    y: rect.origin.y + safe_area.right,
+                    y: rect.origin.y + safe_area.top,
                 }
             } else {
                 let status_bar_frame: CGRect = {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
-                LogicalPosition {
-                    x: rect.origin.x,
-                    y: rect.origin.y + status_bar_frame.size.height,
-                }
+                let x = rect.origin.x;
+                let y = if rect.origin.y > status_bar_frame.size.height {
+                    rect.origin.y
+                } else {
+                    status_bar_frame.size.height
+                };
+                LogicalPosition { x, y }
             })
         }
     }
@@ -189,10 +192,13 @@ impl Window {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
-                LogicalSize {
-                    width: rect.size.width,
-                    height: rect.size.height - status_bar_frame.size.height,
-                }
+                let width = rect.size.width;
+                let height = if rect.origin.y > status_bar_frame.size.height {
+                    rect.size.height
+                } else {
+                    rect.size.height + rect.origin.y - status_bar_frame.size.height
+                };
+                LogicalSize { width, height }
             })
         }
     }
@@ -252,8 +258,19 @@ impl Window {
         warn!("`Window::set_maximized` is ignored on iOS")
     }
 
-    pub fn set_fullscreen(&self, _monitor: Option<RootMonitorHandle>) {
-        warn!("`Window::set_maximized` is ignored on iOS")
+    pub fn set_fullscreen(&self, monitor: Option<RootMonitorHandle>) {
+        unsafe {
+            assert_main_thread!("`Window::set_fullscreen` can only be called on the main thread on iOS");
+            match monitor {
+                Some(monitor) => {
+                    let uiscreen = monitor.get_uiscreen() as id;
+                    let bounds: CGRect = msg_send![uiscreen, bounds];
+                    let () = msg_send![self.window, setBounds:bounds];
+                    let () = msg_send![self.window, setScreen:uiscreen];
+                }
+                None => warn!("`Window::set_fullscreen(None)` ignored on iOS"),
+            }
+        }
     }
 
     pub fn set_decorations(&self, decorations: bool) {
@@ -333,7 +350,6 @@ impl From<id> for WindowId {
 #[derive(Clone)]
 pub struct PlatformSpecificWindowBuilderAttributes {
     pub root_view_class: &'static Class,
-    pub status_bar_hidden: bool,
     pub content_scale_factor: Option<f64>,
     pub supported_orientations: SupportedOrientations,
 }
@@ -342,7 +358,6 @@ impl Default for PlatformSpecificWindowBuilderAttributes {
     fn default() -> PlatformSpecificWindowBuilderAttributes {
         PlatformSpecificWindowBuilderAttributes {
             root_view_class: class!(UIView),
-            status_bar_hidden: false,
             content_scale_factor: None,
             supported_orientations: SupportedOrientations::LandscapeAndPortrait,
         }

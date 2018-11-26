@@ -84,6 +84,7 @@ impl MonitorHandle {
     ///
     /// - **X11:** Can be overridden using the `WINIT_HIDPI_FACTOR` environment variable.
     /// - **Android:** Always returns 1.0.
+    /// - **iOS:** Returns `-[UIScreen nativeScale]`.
     #[inline]
     pub fn get_hidpi_factor(&self) -> f64 {
         self.inner.get_hidpi_factor()

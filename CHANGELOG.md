@@ -1,4 +1,27 @@
 # Unreleased
+- **iOS**
+  - Multitouch implemented.
+  - Basic support for multiple `MonitorHandle`s (`UIScreen`) added.
+  - Basic support for multiple `Window`s added.
+  - lots more main thread asserts for UIKit calls, and safety improvements.
+  - remove `longjmp`/`setjmp` calls.
+  - `EventLoopProxy` implemented.
+  - `get_uiviewcontroller` added to `WindowExtIOS`.
+  - `with_content_scale_factor` added to `WindowBuilderExtIOS`.
+  - `with_decorations` supported, shows/hides the status bar.
+  - `with_supported_orientations` added to `WindowBuilderExtIOS`.
+  - **breaking** `WindowEvent::Focused` is sent on `becomeKeyWindow`/`resignKeyWindow` instead of `applicationDidBecomeActive`/`applicationWillResignActive`.
+  - **breaking** `Event::Suspended` is sent on `applicationDidBecomeActive`/`applicationWillResignActive` instead of `applicationWillBecomeActive`/`applicationDidResignActive`.
+  - `Window::set_decorations` shows/hides the status bar.
+  - `Window::show`/`Window::hide` implemented.
+  - `Window::get_inner_position` takes safeArea into account on ios >= 11 and statusbar on ios < 11.
+  - `Window::get_inner_size` takes safeArea into account on ios >= 11 and statusbar on ios < 11.
+  - `Window::get_position` returns window position instead of `None`.
+  - `Window::set_position` is implemented.
+  - `Window::get_outer_size` returns the window size instead of `None`
+  - **breaking** `Window::set_inner_size` panics instead of doing nothing.
+  - **breaking** `Window::get_hidpi_factor` returns the `contentScaleFactor` of the `UIWindow`.
+  - `Window::set_fullscreen` is implemented (does nothing if monitor is `None`).
 - Changes below are considered **breaking**.
 - Change all occurrences of `EventsLoop` to `EventLoop`.
 - Previously flat API is now exposed through `event`, `event_loop`, `monitor`, and `window` modules.

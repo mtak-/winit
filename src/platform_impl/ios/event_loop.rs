@@ -9,7 +9,7 @@ use std::time::Instant;
 use event::{Event, StartCause};
 use event_loop::{
     ControlFlow,
-    EventLoop as RootEventLoop,
+    EventLoopWindowTarget as RootEventLoopWindowTarget,
     EventLoopClosed,
 };
 
@@ -48,11 +48,15 @@ use platform_impl::platform::monitor;
 use platform_impl::platform::MonitorHandle;
 use platform_impl::platform::view;
 
-pub struct EventLoop<T: 'static> {
+pub struct EventLoopWindowTarget<T: 'static> {
     pub app_state: RefCell<AppState>,
     receiver: Receiver<T>,
     waker: EventLoopWaker,
     sender_to_clone: Sender<T>,
+}
+
+pub struct EventLoop<T: 'static> {
+    window_target: RootEventLoopWindowTarget<T>,
 }
 
 impl<T: 'static> EventLoop<T> {
@@ -75,16 +79,21 @@ impl<T: 'static> EventLoop<T> {
         let waker = EventLoopWaker::new(unsafe { CFRunLoopGetMain() });
 
         EventLoop {
-            app_state,
-            receiver,
-            waker,
-            sender_to_clone,
+            window_target: RootEventLoopWindowTarget {
+                p: EventLoopWindowTarget {
+                    app_state,
+                    receiver,
+                    waker,
+                    sender_to_clone,
+                },
+                _marker: PhantomData,
+            }
         }
     }
 
     pub fn run<F>(self, event_handler: F) -> !
     where
-        F: 'static + FnMut(Event<T>, &RootEventLoop<T>, &mut ControlFlow)
+        F: 'static + FnMut(Event<T>, &RootEventLoopWindowTarget<T>, &mut ControlFlow)
     {
         unsafe {
             let application: *mut c_void = msg_send![class!(UIApplication), sharedApplication];
@@ -94,7 +103,7 @@ impl<T: 'static> EventLoop<T> {
             debug_assert!(EVENT_HANDLER.is_none(), "multiple `EventLoop`s are unsupported on iOS");
             EVENT_HANDLER = Some(Box::into_raw(Box::new(EventLoopHandler::new(
                 event_handler,
-                self,
+                self.window_target,
             ))));
 
             UIApplicationMain(0, ptr::null(), nil, NSString::alloc(nil).init_str("AppDelegate"));
@@ -103,7 +112,7 @@ impl<T: 'static> EventLoop<T> {
     }
 
     pub fn create_proxy(&self) -> EventLoopProxy<T> {
-        EventLoopProxy::new(self.sender_to_clone.clone())
+        EventLoopProxy::new(self.window_target.p.sender_to_clone.clone())
     }
 
     pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
@@ -118,6 +127,10 @@ impl<T: 'static> EventLoop<T> {
         unsafe {
             monitor::main_uiscreen()
         }
+    }
+
+    pub fn window_target(&self) -> &RootEventLoopWindowTarget<T> {
+        &self.window_target
     }
 }
 
@@ -307,7 +320,7 @@ impl LoopState {
 
 struct EventLoopHandler<F, T: 'static> {
     f: F,
-    event_loop: RootEventLoop<T>,
+    event_loop: RootEventLoopWindowTarget<T>,
     control_flow: ControlFlow,
     loop_state: LoopState,
     start: Option<Instant>,
@@ -341,13 +354,13 @@ macro_rules! debug_bug_assert_eq {
 
 impl<F, T> EventLoopHandler<F, T>
 where
-    F: 'static + FnMut(Event<T>, &RootEventLoop<T>, &mut ControlFlow),
+    F: 'static + FnMut(Event<T>, &RootEventLoopWindowTarget<T>, &mut ControlFlow),
     T: 'static,
 {
-    fn new(f: F, event_loop: EventLoop<T>) -> EventLoopHandler<F, T> {
+    fn new(f: F, event_loop: RootEventLoopWindowTarget<T>) -> EventLoopHandler<F, T> {
         EventLoopHandler {
             f,
-            event_loop: RootEventLoop { event_loop, _marker: PhantomData },
+            event_loop,
             control_flow: ControlFlow::default(),
             loop_state: LoopState::Uninitialized,
             start: None,
@@ -365,7 +378,7 @@ where
                 self.loop_state = LoopState::Running {
                     active_control_flow: ControlFlow::Poll
                 };
-                self.event_loop.event_loop.waker.start();
+                self.event_loop.p.waker.start();
                 Event::NewEvents(StartCause::Init)
             }
             (RawEvent::Init, other) => bug!(format!("`Init` sent with unexpected control flow {:?}", other)),
@@ -431,13 +444,13 @@ where
                 if old_instant == new_instant => self.start = Some(Instant::now()),
             (_, ControlFlow::Wait) => {
                 self.start = Some(Instant::now());
-                self.event_loop.event_loop.waker.stop()
+                self.event_loop.p.waker.stop()
             }
             (_, ControlFlow::WaitUntil(new_instant)) => {
                 self.start = Some(Instant::now());
-                self.event_loop.event_loop.waker.start_at(new_instant)
+                self.event_loop.p.waker.start_at(new_instant)
             }
-            (_, ControlFlow::Poll) => self.event_loop.event_loop.waker.start(),
+            (_, ControlFlow::Poll) => self.event_loop.p.waker.start(),
             (_, ControlFlow::Exit) => {
                 // https://developer.apple.com/library/archive/qa/qa1561/_index.html
                 // it is not possible to quit an iOS app gracefully and programatically
@@ -450,7 +463,7 @@ where
 
 impl<F, T> EventHandler for EventLoopHandler<F, T>
 where
-    F: 'static + FnMut(Event<T>, &RootEventLoop<T>, &mut ControlFlow),
+    F: 'static + FnMut(Event<T>, &RootEventLoopWindowTarget<T>, &mut ControlFlow),
     T: 'static,
 {
     fn handle_nonuser_event(&mut self, event: RawEvent) {
@@ -489,7 +502,7 @@ where
             &LoopState::NotRunning => debug_bug!("User event sent for an `EventLoop` that is not currently processing events"),
             &LoopState::Running {..} => {
                 debug_bug_assert!(self.start.is_none(), "`EventHandler` has an unexpected `start` time");
-                for event in self.event_loop.event_loop.receiver.try_iter() {
+                for event in self.event_loop.p.receiver.try_iter() {
                     (self.f)(
                         Event::UserEvent(event),
                         &self.event_loop,
@@ -501,7 +514,7 @@ where
     }
 
     fn app_state(&self) -> &RefCell<AppState> {
-        &self.event_loop.event_loop.app_state
+        &self.event_loop.p.app_state
     }
 }
 

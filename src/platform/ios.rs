@@ -56,9 +56,6 @@ pub trait WindowBuilderExtIOS {
     ///
     /// The class will be initialized by calling `[root_view initWithFrame:CGRect]`
     fn with_root_view_class(self, root_view_class: *const c_void) -> WindowBuilder;
-
-    /// Hides the status bar when the `Window` is visible.
-    fn with_status_bar_hidden(self) -> WindowBuilder;
     
     /// Sets the `contentScaleFactor` of the underlying `UIWindow` to `content_scale_factor`.
     /// 
@@ -75,12 +72,6 @@ impl WindowBuilderExtIOS for WindowBuilder {
     #[inline]
     fn with_root_view_class(mut self, root_view_class: *const c_void) -> WindowBuilder {
         self.platform_specific.root_view_class = unsafe { &*(root_view_class as *const _) };
-        self
-    }
-
-    #[inline]
-    fn with_status_bar_hidden(mut self) -> WindowBuilder {
-        self.platform_specific.status_bar_hidden = true;
         self
     }
 

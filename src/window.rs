@@ -319,6 +319,10 @@ impl Window {
     /// Modifies the title of the window.
     ///
     /// This is a no-op if the window has already been closed.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_title(&self, title: &str) {
         self.window.set_title(title)
@@ -381,6 +385,10 @@ impl Window {
     /// top-left hand corner of the desktop.
     ///
     /// The same conditions that apply to `get_position` apply to this method.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Excludes `safeAreaInsets` on iOS >= 11 and excludes the status bar frame on iOS < 11.
     #[inline]
     pub fn get_inner_position(&self) -> Option<LogicalPosition> {
         self.window.get_inner_position()
@@ -403,6 +411,10 @@ impl Window {
     /// Converting the returned `LogicalSize` to `PhysicalSize` produces the size your framebuffer should be.
     ///
     /// Returns `None` if the window no longer exists.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Excludes `safeAreaInsets` on iOS >= 11 and excludes the status bar frame on iOS < 11.
     #[inline]
     pub fn get_inner_size(&self) -> Option<LogicalSize> {
         self.window.get_inner_size()
@@ -424,18 +436,30 @@ impl Window {
     /// See `get_inner_size` for more information about the values.
     ///
     /// This is a no-op if the window has already been closed.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Panics. Only setting outer size makes sense on iOS.
     #[inline]
     pub fn set_inner_size(&self, size: LogicalSize) {
         self.window.set_inner_size(size)
     }
 
     /// Sets a minimum dimension size for the window.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_min_dimensions(&self, dimensions: Option<LogicalSize>) {
         self.window.set_min_dimensions(dimensions)
     }
 
     /// Sets a maximum dimension size for the window.
+    /// 
+    /// ## Platform-specific
+    /// 
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_max_dimensions(&self, dimensions: Option<LogicalSize>) {
         self.window.set_max_dimensions(dimensions)
@@ -468,13 +492,18 @@ impl Window {
     ///
     /// - **X11:** Can be overridden using the `WINIT_HIDPI_FACTOR` environment variable.
     /// - **Android:** Always returns 1.0.
+    /// - **iOS:** Returns `-[UIWindow contentScaleFactor]`
     #[inline]
     pub fn get_hidpi_factor(&self) -> f64 {
         self.window.get_hidpi_factor()
     }
 
     /// Modifies the mouse cursor of the window.
-    /// Has no effect on Android.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Android:** Has no effect.
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_cursor(&self, cursor: MouseCursor) {
         self.window.set_cursor(cursor);
@@ -514,24 +543,41 @@ impl Window {
     }
 
     /// Sets the window to maximized or back
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Android:** Has no effect.
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_maximized(&self, maximized: bool) {
         self.window.set_maximized(maximized)
     }
 
     /// Sets the window to fullscreen or back
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **iOS:** If monitor is `None`, this has no effect.
     #[inline]
     pub fn set_fullscreen(&self, monitor: Option<MonitorHandle>) {
         self.window.set_fullscreen(monitor)
     }
 
     /// Turn window decorations on or off.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **iOS:** Changes the return value of `-[UIViewController prefersStatusBarHidden]` to `!decorations`.
     #[inline]
     pub fn set_decorations(&self, decorations: bool) {
         self.window.set_decorations(decorations)
     }
 
     /// Change whether or not the window will always be on top of other windows.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_always_on_top(&self, always_on_top: bool) {
         self.window.set_always_on_top(always_on_top)
@@ -551,6 +597,10 @@ impl Window {
     }
 
     /// Sets location of IME candidate box in client area coordinates relative to the top left.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **iOS:** Has no effect.
     #[inline]
     pub fn set_ime_spot(&self, position: LogicalPosition) {
         self.window.set_ime_spot(position)
