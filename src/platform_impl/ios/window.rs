@@ -131,17 +131,20 @@ impl Window {
                 let safe_area: UIEdgeInsets = msg_send![self.window, safeAreaInsets];
                 LogicalPosition {
                     x: rect.origin.x + safe_area.left,
-                    y: rect.origin.y + safe_area.right,
+                    y: rect.origin.y + safe_area.top,
                 }
             } else {
                 let status_bar_frame: CGRect = {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
-                LogicalPosition {
-                    x: rect.origin.x,
-                    y: rect.origin.y + status_bar_frame.size.height,
-                }
+                let x = rect.origin.x;
+                let y = if rect.origin.y > status_bar_frame.size.height {
+                    rect.origin.y
+                } else {
+                    status_bar_frame.size.height
+                };
+                LogicalPosition { x, y }
             })
         }
     }
@@ -189,10 +192,13 @@ impl Window {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
                     msg_send![app, statusBarFrame]
                 };
-                LogicalSize {
-                    width: rect.size.width,
-                    height: rect.size.height - status_bar_frame.size.height,
-                }
+                let width = rect.size.width;
+                let height = if rect.origin.y > status_bar_frame.size.height {
+                    rect.size.height
+                } else {
+                    rect.size.height + rect.origin.y - status_bar_frame.size.height
+                };
+                LogicalSize { width, height }
             })
         }
     }
