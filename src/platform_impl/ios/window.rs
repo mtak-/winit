@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use objc::runtime::{Class, NO, Object, YES};
 
-use dpi::{LogicalPosition, LogicalSize};
+use dpi::{self, LogicalPosition, LogicalSize};
 use icon::Icon;
 use monitor::MonitorHandle as RootMonitorHandle;
 use platform::ios::{MonitorHandleExtIOS, SupportedOrientations};
@@ -118,7 +118,7 @@ impl Window {
     pub fn request_redraw(&self) {
         unsafe {
             assert_main_thread!("`Window::request_redraw` can only be called on the main thread on iOS");
-            let () = msg_send![self.window, setNeedsDisplay];
+            let () = msg_send![self.view, setNeedsDisplay];
         }
     }
     
@@ -136,6 +136,7 @@ impl Window {
             } else {
                 let status_bar_frame: CGRect = {
                     let app: id = msg_send![class!(UIApplication), sharedApplicaton];
+                    assert!(!app.is_null(), "`Window::get_inner_position` cannot be called before `EventLoop::run` on iOS");
                     msg_send![app, statusBarFrame]
                 };
                 let x = rect.origin.x;
@@ -233,7 +234,7 @@ impl Window {
     pub fn get_hidpi_factor(&self) -> f64 {
         unsafe {
             assert_main_thread!("`Window::get_hidpi_factor` can only be called on the main thread on iOS");
-            let hidpi: CGFloat = msg_send![self.window, contentScaleFactor];
+            let hidpi: CGFloat = msg_send![self.view, contentScaleFactor];
             hidpi as _
         }
     }
@@ -325,6 +326,15 @@ impl Window {
     pub fn get_uiwindow(&self) -> id { self.window }
     pub fn get_uiviewcontroller(&self) -> id { self.view_controller }
     pub fn get_uiview(&self) -> id { self.view }
+
+    pub fn set_hidpi_factor(&self, factor: f64) {
+        unsafe {
+            assert_main_thread!("`Window::set_hidpi_factor` can only be called on the main thread on iOS");
+            assert!(dpi::validate_hidpi_factor(factor), "`WindowExtIOS::set_hidpi_factor` received an invalid hidpi factor");
+            let hidpi = factor as CGFloat;
+            let () = msg_send![self.view, setContentScaleFactor:hidpi];
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -338,6 +348,12 @@ unsafe impl Sync for WindowId {}
 impl From<&Object> for WindowId {
     fn from(window: &Object) -> WindowId {
         WindowId { window: window as *const _ as _ }
+    }
+}
+
+impl From<&mut Object> for WindowId {
+    fn from(window: &mut Object) -> WindowId {
+        WindowId { window: window as _ }
     }
 }
 

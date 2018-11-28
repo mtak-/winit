@@ -54,7 +54,10 @@
 //! result in a wide range of possible values, including some interesting ones like 1.0833333333333333. This can be
 //! overridden using the `WINIT_HIDPI_FACTOR` environment variable, though that's not recommended.
 //! - **Wayland:** On Wayland, DPI factors are set per-screen by the server, and are always integers (most often 1 or 2).
-//! - **iOS:** DPI factors are both constant and device-specific on iOS.
+//! - **iOS:** DPI factors are constant per `MonitorHandle` and the same as
+//! [`-[UIScreen nativeScale]`](https://developer.apple.com/documentation/uikit/uiscreen/1617825-nativescale?language=objc).
+//! Windows may have a DPI factor that differs from their `MonitorHandle`. Window DPI can be changed by calling 
+//! `WindowExtIOS::set_hidpi_factor` or `WindowBuilderExtIOS::with_hidpi_factor`.
 //! - **Android:** This feature isn't yet implemented on Android, so the DPI factor will always be returned as 1.0.
 //!
 //! The window's logical size is conserved across DPI changes, resulting in the physical size changing instead. This

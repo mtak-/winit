@@ -196,6 +196,28 @@ unsafe fn get_window_class() -> &'static Class {
             }
         }
 
+        extern fn set_content_scale_factor(object: &mut Object, _: Sel, factor: CGFloat) {
+            unsafe {
+                let () = msg_send![super(object, class!(UIWindow)), setContentScaleFactor:factor];
+                let view_controller: id = msg_send![object, rootViewController];
+                let view: id = msg_send![view_controller, view];
+                let () = msg_send![view, setContentScaleFactor:factor];
+                let bounds: CGRect = msg_send![object, bounds];
+                let size = crate::dpi::LogicalSize {
+                    width: bounds.size.width,
+                    height: bounds.size.height,
+                };
+                event_loop::process_erased_event(Event::WindowEvent {
+                    window_id: RootWindowId(object.into()),
+                    event: WindowEvent::HiDpiFactorChanged(factor as _),
+                });
+                event_loop::process_erased_event(Event::WindowEvent {
+                    window_id: RootWindowId(object.into()),
+                    event: WindowEvent::Resized(size),
+                });
+            }
+        }
+
         let mut decl = ClassDecl::new("WinitUIWindow", uiwindow_class)
             .expect("Failed to declare class `WinitUIWindow`");
         decl.add_method(sel!(becomeKeyWindow),
@@ -205,15 +227,15 @@ unsafe fn get_window_class() -> &'static Class {
 
         decl.add_method(sel!(touchesBegan:withEvent:),
                         handle_touches as extern fn(this: &Object, _: Sel, _: id, _:id));
-
         decl.add_method(sel!(touchesMoved:withEvent:),
                         handle_touches as extern fn(this: &Object, _: Sel, _: id, _:id));
-
         decl.add_method(sel!(touchesEnded:withEvent:),
                         handle_touches as extern fn(this: &Object, _: Sel, _: id, _:id));
-
         decl.add_method(sel!(touchesCancelled:withEvent:),
                         handle_touches as extern fn(this: &Object, _: Sel, _: id, _:id));
+
+        decl.add_method(sel!(setContentScaleFactor:),
+                        set_content_scale_factor as extern fn(&mut Object, Sel, CGFloat));
 
         CLASS = Some(decl.register());
     }
@@ -363,13 +385,10 @@ pub fn create_delegate_class() {
 
         decl.add_method(sel!(applicationDidBecomeActive:),
                         did_become_active as extern fn(&Object, Sel, id));
-
         decl.add_method(sel!(applicationWillResignActive:),
                         will_resign_active as extern fn(&Object, Sel, id));
-
         decl.add_method(sel!(applicationWillEnterForeground:),
                         will_enter_foreground as extern fn(&Object, Sel, id));
-
         decl.add_method(sel!(applicationDidEnterBackground:),
                         did_enter_background as extern fn(&Object, Sel, id));
 

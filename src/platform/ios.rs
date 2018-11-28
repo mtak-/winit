@@ -21,6 +21,11 @@ pub trait WindowExtIOS {
     ///
     /// The pointer will become invalid when the `Window` is destroyed.
     fn get_uiview(&self) -> *mut c_void;
+
+    /// Sets the HiDpi factor used by this window.
+    /// 
+    /// This translates to `-[UIWindow setContentScaleFactor:factor]`.
+    fn set_hidpi_factor(&self, factor: f64);
 }
 
 impl WindowExtIOS for Window {
@@ -37,6 +42,11 @@ impl WindowExtIOS for Window {
     #[inline]
     fn get_uiview(&self) -> *mut c_void {
         self.window.get_uiview() as _
+    }
+
+    #[inline]
+    fn set_hidpi_factor(&self, factor: f64) {
+        self.window.set_hidpi_factor(factor)
     }
 }
 
@@ -60,7 +70,7 @@ pub trait WindowBuilderExtIOS {
     /// Sets the `contentScaleFactor` of the underlying `UIWindow` to `content_scale_factor`.
     /// 
     /// The default value is the same is device dependent.
-    fn with_content_scale_factor(self, content_scale_factor: f64) -> WindowBuilder;
+    fn with_hidpi_factor(self, content_scale_factor: f64) -> WindowBuilder;
     
     /// Sets the `contentScaleFactor` of the underlying `UIWindow` to `content_scale_factor`.
     /// 
@@ -76,11 +86,12 @@ impl WindowBuilderExtIOS for WindowBuilder {
     }
 
     #[inline]
-    fn with_content_scale_factor(mut self, content_scale_factor: f64) -> WindowBuilder {
+    fn with_hidpi_factor(mut self, content_scale_factor: f64) -> WindowBuilder {
         self.platform_specific.content_scale_factor = Some(content_scale_factor);
         self
     }
 
+    #[inline]
     fn with_supported_orientations(mut self, supported_orientations: SupportedOrientations) -> WindowBuilder {
         self.platform_specific.supported_orientations = supported_orientations;
         self

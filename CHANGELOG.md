@@ -7,7 +7,7 @@
   - remove `longjmp`/`setjmp` calls.
   - `EventLoopProxy` implemented.
   - `get_uiviewcontroller` added to `WindowExtIOS`.
-  - `with_content_scale_factor` added to `WindowBuilderExtIOS`.
+  - `with_hidpi_factor` added to `WindowBuilderExtIOS`.
   - `with_decorations` supported, shows/hides the status bar.
   - `with_supported_orientations` added to `WindowBuilderExtIOS`.
   - **breaking** `WindowEvent::Focused` is sent on `becomeKeyWindow`/`resignKeyWindow` instead of `applicationDidBecomeActive`/`applicationWillResignActive`.
