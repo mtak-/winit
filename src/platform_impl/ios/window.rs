@@ -5,13 +5,14 @@ use objc::runtime::{Class, NO, Object, YES};
 use dpi::{self, LogicalPosition, LogicalSize};
 use icon::Icon;
 use monitor::MonitorHandle as RootMonitorHandle;
-use platform::ios::{MonitorHandleExtIOS, SupportedOrientations};
+use platform::ios::{MonitorHandleExtIOS, ValidOrientations};
 use window::{
     CreationError,
     MouseCursor,
     WindowAttributes,
 };
 
+use platform_impl::platform::event_loop;
 use platform_impl::platform::ffi::{
     id,
     CGFloat,
@@ -19,6 +20,7 @@ use platform_impl::platform::ffi::{
     CGRect,
     CGSize,
     UIEdgeInsets,
+    UIInterfaceOrientationMask,
 };
 use platform_impl::platform::monitor;
 use platform_impl::platform::view;
@@ -327,12 +329,21 @@ impl Window {
     pub fn get_uiviewcontroller(&self) -> id { self.view_controller }
     pub fn get_uiview(&self) -> id { self.view }
 
-    pub fn set_hidpi_factor(&self, factor: f64) {
+    pub fn set_hidpi_factor(&self, hidpi_factor: f64) {
         unsafe {
             assert_main_thread!("`Window::set_hidpi_factor` can only be called on the main thread on iOS");
-            assert!(dpi::validate_hidpi_factor(factor), "`WindowExtIOS::set_hidpi_factor` received an invalid hidpi factor");
-            let hidpi = factor as CGFloat;
-            let () = msg_send![self.view, setContentScaleFactor:hidpi];
+            assert!(dpi::validate_hidpi_factor(hidpi_factor), "`WindowExtIOS::set_hidpi_factor` received an invalid hidpi factor");
+            let hidpi_factor = hidpi_factor as CGFloat;
+            let () = msg_send![self.view, setContentScaleFactor:hidpi_factor];
+        }
+    }
+
+    pub fn set_valid_orientations(&self, valid_orientations: ValidOrientations) {
+        unsafe {
+            assert_main_thread!("`Window::set_valid_orientations` can only be called on the main thread on iOS");
+            let idiom = event_loop::get_idiom();
+            let supported_orientations = UIInterfaceOrientationMask::from_valid_orientations_idiom(valid_orientations, idiom);
+            msg_send![self.view_controller, setSupportedInterfaceOrientations:supported_orientations];
         }
     }
 }
@@ -366,16 +377,16 @@ impl From<id> for WindowId {
 #[derive(Clone)]
 pub struct PlatformSpecificWindowBuilderAttributes {
     pub root_view_class: &'static Class,
-    pub content_scale_factor: Option<f64>,
-    pub supported_orientations: SupportedOrientations,
+    pub hidpi_factor: Option<f64>,
+    pub valid_orientations: ValidOrientations,
 }
 
 impl Default for PlatformSpecificWindowBuilderAttributes {
     fn default() -> PlatformSpecificWindowBuilderAttributes {
         PlatformSpecificWindowBuilderAttributes {
             root_view_class: class!(UIView),
-            content_scale_factor: None,
-            supported_orientations: SupportedOrientations::LandscapeAndPortrait,
+            hidpi_factor: None,
+            valid_orientations: ValidOrientations::LandscapeAndPortrait,
         }
     }
 }

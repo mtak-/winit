@@ -11,7 +11,7 @@ use event::{
     TouchPhase,
     WindowEvent
 };
-use platform::ios::{MonitorHandleExtIOS, SupportedOrientations};
+use platform::ios::MonitorHandleExtIOS;
 use window::{WindowAttributes, WindowId as RootWindowId};
 
 use platform_impl::platform::DeviceId;
@@ -22,7 +22,6 @@ use platform_impl::platform::ffi::{
     CGFloat,
     CGPoint,
     CGRect,
-    NSInteger,
     UIInterfaceOrientationMask,
     UITouchPhase,
 };
@@ -106,6 +105,7 @@ unsafe fn get_view_controller_class() -> &'static Class {
         extern fn set_supported_orientations(object: &mut Object, _: Sel, orientations: UIInterfaceOrientationMask) {
             unsafe {
                 object.set_ivar::<UIInterfaceOrientationMask>("_supported_orientations", orientations);
+                let () = msg_send![class!(UIViewController), attemptRotationToDeviceOrientation];
             }
         }
 
@@ -278,32 +278,12 @@ pub unsafe fn create_view_controller(
     } else {
         YES
     };
+    let idiom = event_loop::get_idiom();
+    let supported_orientations = UIInterfaceOrientationMask::from_valid_orientations_idiom(
+        platform_attributes.valid_orientations,
+        idiom,
+    );
     let () = msg_send![view_controller, setPrefersStatusBarHidden:status_bar_hidden];
-    let supported_orientations = match platform_attributes.supported_orientations {
-        SupportedOrientations::LandscapeAndPortrait => {
-            let device: id = msg_send![class!(UIDevice), currentDevice];
-            let idiom: NSInteger = msg_send![device, userInterfaceIdiom];
-            let base = UIInterfaceOrientationMask::Landscape | UIInterfaceOrientationMask::Portrait;
-            if idiom != 0 {
-                // not a phone
-                base | UIInterfaceOrientationMask::PortraitUpsideDown
-            } else {
-                base
-            }
-        }
-        SupportedOrientations::Landscape => UIInterfaceOrientationMask::Landscape,
-        SupportedOrientations::Portrait => {
-            let device: id = msg_send![class!(UIDevice), currentDevice];
-            let idiom: NSInteger = msg_send![device, userInterfaceIdiom];
-            let base = UIInterfaceOrientationMask::Portrait;
-            if idiom != 0 {
-                // not a phone
-                base | UIInterfaceOrientationMask::PortraitUpsideDown
-            } else {
-                base
-            }
-        }
-    };
     let () = msg_send![view_controller, setSupportedInterfaceOrientations:supported_orientations];
     let () = msg_send![view_controller, setView:view];
     view_controller
@@ -323,8 +303,8 @@ pub unsafe fn create_window(
     let window: id = msg_send![window, initWithFrame:bounds];
     assert!(!window.is_null(), "Failed to initialize `UIWindow` instance");
     let () = msg_send![window, setRootViewController:view_controller];
-    if let Some(content_scale_factor) = platform_attributes.content_scale_factor {
-        let () = msg_send![window, setContentScaleFactor:content_scale_factor as CGFloat];
+    if let Some(hidpi_factor) = platform_attributes.hidpi_factor {
+        let () = msg_send![window, setContentScaleFactor:hidpi_factor as CGFloat];
     }
     if let &Some(ref monitor) = &window_attributes.fullscreen {
         let () = msg_send![window, setScreen:monitor.get_uiscreen()];

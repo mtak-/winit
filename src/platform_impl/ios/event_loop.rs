@@ -13,8 +13,11 @@ use event_loop::{
     EventLoopClosed,
 };
 
+use platform::ios::Idiom;
+
 use platform_impl::platform::app_state::AppState;
 use platform_impl::platform::ffi::{
+    id,
     nil,
     CFAbsoluteTimeGetCurrent,
     CFRelease,
@@ -43,6 +46,7 @@ use platform_impl::platform::ffi::{
     kCFRunLoopExit,
     NSString,
     UIApplicationMain,
+    UIUserInterfaceIdiom,
 };
 use platform_impl::platform::monitor;
 use platform_impl::platform::MonitorHandle;
@@ -131,6 +135,16 @@ impl<T: 'static> EventLoop<T> {
 
     pub fn window_target(&self) -> &RootEventLoopWindowTarget<T> {
         &self.window_target
+    }
+}
+
+// EventLoopExtIOS
+impl<T: 'static> EventLoop<T> {
+    pub fn get_idiom(&self) -> Idiom {
+        // guaranteed to be on main thread
+        unsafe {
+            self::get_idiom()
+        }
     }
 }
 
@@ -578,4 +592,11 @@ impl EventLoopWaker {
             }
         }
     }
+}
+
+// must be called on main thread
+pub unsafe fn get_idiom() -> Idiom {
+    let device: id = msg_send![class!(UIDevice), currentDevice];
+    let raw_idiom: UIUserInterfaceIdiom = msg_send![device, userInterfaceIdiom];
+    raw_idiom.into()
 }

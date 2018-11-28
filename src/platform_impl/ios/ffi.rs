@@ -7,6 +7,8 @@ use std::os::raw::*;
 use objc::{Encode, Encoding};
 use objc::runtime::Object;
 
+use platform::ios::{Idiom, ValidOrientations};
+
 pub type id = *mut Object;
 pub const nil: id = 0 as id;
 
@@ -106,8 +108,49 @@ pub struct UIEdgeInsets {
 }
 
 #[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UIUserInterfaceIdiom(NSInteger);
+
+unsafe impl Encode for UIUserInterfaceIdiom {
+    fn encode() -> Encoding { NSInteger::encode() }
+}
+
+impl UIUserInterfaceIdiom {
+    pub const Unspecified: UIUserInterfaceIdiom = UIUserInterfaceIdiom(-1);
+    pub const Phone: UIUserInterfaceIdiom = UIUserInterfaceIdiom(0);
+    pub const Pad: UIUserInterfaceIdiom = UIUserInterfaceIdiom(1);
+    pub const TV: UIUserInterfaceIdiom = UIUserInterfaceIdiom(2);
+    pub const CarPlay: UIUserInterfaceIdiom = UIUserInterfaceIdiom(3);
+}
+
+impl From<Idiom> for UIUserInterfaceIdiom {
+    fn from(idiom: Idiom) -> UIUserInterfaceIdiom {
+        match idiom {
+            Idiom::Unspecified => UIUserInterfaceIdiom::Unspecified,
+            Idiom::Phone => UIUserInterfaceIdiom::Phone,
+            Idiom::Pad => UIUserInterfaceIdiom::Pad,
+            Idiom::TV => UIUserInterfaceIdiom::TV,
+            Idiom::CarPlay => UIUserInterfaceIdiom::CarPlay,
+        }
+    }
+}
+
+impl Into<Idiom> for UIUserInterfaceIdiom {
+    fn into(self) -> Idiom {
+        match self {
+            UIUserInterfaceIdiom::Unspecified => Idiom::Unspecified,
+            UIUserInterfaceIdiom::Phone => Idiom::Phone,
+            UIUserInterfaceIdiom::Pad => Idiom::Pad,
+            UIUserInterfaceIdiom::TV => Idiom::TV,
+            UIUserInterfaceIdiom::CarPlay => Idiom::CarPlay,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
-pub struct UIInterfaceOrientationMask(pub NSUInteger);
+pub struct UIInterfaceOrientationMask(NSUInteger);
 
 unsafe impl Encode for UIInterfaceOrientationMask {
     fn encode() -> Encoding { NSUInteger::encode() }
@@ -119,6 +162,8 @@ impl UIInterfaceOrientationMask {
     pub const LandscapeLeft: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 4);
     pub const LandscapeRight: UIInterfaceOrientationMask = UIInterfaceOrientationMask(1 << 3);
     pub const Landscape: UIInterfaceOrientationMask = UIInterfaceOrientationMask(Self::LandscapeLeft.0 | Self::LandscapeRight.0);
+    pub const AllButUpsideDown: UIInterfaceOrientationMask = UIInterfaceOrientationMask(Self::Landscape.0 | Self::Portrait.0);
+    pub const All: UIInterfaceOrientationMask = UIInterfaceOrientationMask(Self::AllButUpsideDown.0 | Self::PortraitUpsideDown.0);
 }
 
 impl BitOr for UIInterfaceOrientationMask {
@@ -126,6 +171,21 @@ impl BitOr for UIInterfaceOrientationMask {
 
     fn bitor(self, rhs: Self) -> Self {
         UIInterfaceOrientationMask(self.0 | rhs.0)
+    }
+}
+
+impl UIInterfaceOrientationMask {
+    pub fn from_valid_orientations_idiom(
+        valid_orientations: ValidOrientations,
+        idiom: Idiom,
+    ) -> UIInterfaceOrientationMask {
+        match (valid_orientations, idiom) {
+            (ValidOrientations::LandscapeAndPortrait, Idiom::Phone) => UIInterfaceOrientationMask::AllButUpsideDown,
+            (ValidOrientations::LandscapeAndPortrait, _) => UIInterfaceOrientationMask::All,
+            (ValidOrientations::Landscape, _) => UIInterfaceOrientationMask::Landscape,
+            (ValidOrientations::Portrait, Idiom::Phone) => UIInterfaceOrientationMask::Portrait,
+            (ValidOrientations::Portrait, _) => UIInterfaceOrientationMask::Portrait | UIInterfaceOrientationMask::PortraitUpsideDown,
+        }
     }
 }
 
