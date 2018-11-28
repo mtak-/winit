@@ -35,6 +35,7 @@ use platform_impl::platform::ffi::{
     CFRunLoopSourceRef,
     CFRunLoopSourceSignal,
     CFRunLoopTimerCreate,
+    CFRunLoopTimerInvalidate,
     CFRunLoopTimerRef,
     CFRunLoopTimerSetNextFireDate,
     CFRunLoopWakeUp,
@@ -547,6 +548,15 @@ pub unsafe fn process_erased_event<E: Into<RawEvent>>(event: E) {
 
 struct EventLoopWaker {
     timer: CFRunLoopTimerRef,
+}
+
+impl Drop for EventLoopWaker {
+    fn drop(&mut self) {
+        unsafe {
+            CFRunLoopTimerInvalidate(self.timer);
+            CFRelease(self.timer as _);
+        }
+    }
 }
 
 impl EventLoopWaker {

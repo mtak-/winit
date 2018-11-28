@@ -237,6 +237,7 @@ extern {
         timer: CFRunLoopTimerRef,
         fireDate: CFAbsoluteTime,
     );
+    pub fn CFRunLoopTimerInvalidate(time: CFRunLoopTimerRef);
 
     pub fn CFRunLoopSourceCreate(
         allocator: CFAllocatorRef,
