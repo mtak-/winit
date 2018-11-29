@@ -14,8 +14,9 @@ use event::{
 use platform::ios::MonitorHandleExtIOS;
 use window::{WindowAttributes, WindowId as RootWindowId};
 
+use platform_impl::platform::app_state::AppState;
 use platform_impl::platform::DeviceId;
-use platform_impl::platform::event_loop::{self, RawEvent};
+use platform_impl::platform::event_loop;
 use platform_impl::platform::ffi::{
     id,
     nil,
@@ -46,7 +47,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
         extern fn draw_rect(object: &Object, _: Sel, rect: CGRect) {
             unsafe {
                 let window: id = msg_send![object, window];
-                event_loop::process_erased_event(Event::WindowEvent {
+                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::RedrawRequested,
                 });
@@ -63,7 +64,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
                     width: bounds.size.width,
                     height: bounds.size.height,
                 };
-                event_loop::process_erased_event(Event::WindowEvent {
+                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::Resized(size),
                 });
@@ -146,7 +147,7 @@ unsafe fn get_window_class() -> &'static Class {
 
         extern fn become_key_window(object: &Object, _: Sel) {
             unsafe {
-                event_loop::process_erased_event(Event::WindowEvent {
+                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::Focused(true),
                 })
@@ -155,7 +156,7 @@ unsafe fn get_window_class() -> &'static Class {
 
         extern fn resign_key_window(object: &Object, _: Sel) {
             unsafe {
-                event_loop::process_erased_event(Event::WindowEvent {
+                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::Focused(false),
                 })
@@ -183,7 +184,7 @@ unsafe fn get_window_class() -> &'static Class {
                         _ => panic!("unexpected touch phase: {:?}", phase as i32),
                     };
 
-                    event_loop::process_erased_event(Event::WindowEvent {
+                    AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
                         window_id: RootWindowId(object.into()),
                         event: WindowEvent::Touch(Touch {
                             device_id: RootDeviceId(DeviceId { uiscreen }),
@@ -207,11 +208,12 @@ unsafe fn get_window_class() -> &'static Class {
                     width: bounds.size.width,
                     height: bounds.size.height,
                 };
-                event_loop::process_erased_event(Event::WindowEvent {
+                let mut app_state = AppState::get_mut();
+                app_state.handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::HiDpiFactorChanged(factor as _),
                 });
-                event_loop::process_erased_event(Event::WindowEvent {
+                app_state.handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::Resized(size),
                 });
@@ -316,21 +318,20 @@ pub unsafe fn create_window(
 pub fn create_delegate_class() {
     extern fn did_finish_launching(_: &mut Object, _: Sel, _: id, _: id) -> BOOL {
         unsafe {
-            event_loop::did_finish_launching();
-            event_loop::process_erased_event(RawEvent::Init);
+            AppState::did_finish_launching(AppState::get_mut());
         }
         YES
     }
 
     extern fn did_become_active(_: &Object, _: Sel, _: id) {
         unsafe {
-            event_loop::process_erased_event(Event::Suspended(false))
+            AppState::get_mut().handle_nonuser_event(Event::Suspended(false))
         }
     }
 
     extern fn will_resign_active(_: &Object, _: Sel, _: id) {
         unsafe {
-            event_loop::process_erased_event(Event::Suspended(true))
+            AppState::get_mut().handle_nonuser_event(Event::Suspended(true))
         }
     }
 
@@ -342,17 +343,18 @@ pub fn create_delegate_class() {
             let app: id = msg_send![class!(UIApplication), sharedApplication];
             let windows: id = msg_send![app, windows];
             let windows_enum: id = msg_send![windows, objectEnumerator];
+            let mut app_state = AppState::get_mut();
             loop {
                 let window: id = msg_send![windows_enum, nextObject];
                 if window == nil {
                     break
                 }
-                event_loop::process_erased_event(Event::WindowEvent {
+                app_state.handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::Destroyed,
                 });
             }
-            event_loop::process_erased_event(Event::LoopDestroyed);
+            AppState::terminated(app_state);
         }
     }
 
