@@ -12,8 +12,14 @@ use window::{
     WindowAttributes,
 };
 
+use platform_impl::platform::{
+    event_loop,
+    monitor,
+    view,
+    EventLoopWindowTarget,
+    MonitorHandle
+};
 use platform_impl::platform::app_state::AppState;
-use platform_impl::platform::event_loop;
 use platform_impl::platform::ffi::{
     id,
     CGFloat,
@@ -22,12 +28,6 @@ use platform_impl::platform::ffi::{
     CGSize,
     UIEdgeInsets,
     UIInterfaceOrientationMask,
-};
-use platform_impl::platform::monitor;
-use platform_impl::platform::view;
-use platform_impl::platform::{
-    EventLoopWindowTarget,
-    MonitorHandle,
 };
 
 pub struct Window {
@@ -86,8 +86,9 @@ impl Window {
             let view_controller = view::create_view_controller(&window_attributes, &platform_attributes, view);
             let window = view::create_window(&window_attributes, &platform_attributes, bounds, view_controller);
 
-            let mut guard = AppState::get_mut();
-            let supports_safe_area = guard.capabilities().supports_safe_area;
+            // let mut guard = AppState::get_mut();
+            // let supports_safe_area = guard.capabilities().supports_safe_area;
+            let supports_safe_area = true;
 
             let result = Window {
                 window,
@@ -95,7 +96,7 @@ impl Window {
                 view,
                 supports_safe_area,
             };
-            guard.set_key_window(window);
+            AppState::set_key_window(window);
             Ok(result)
         }
     }
@@ -268,9 +269,14 @@ impl Window {
             match monitor {
                 Some(monitor) => {
                     let uiscreen = monitor.get_uiscreen() as id;
+                    let current: id = msg_send![self.window, screen];
                     let bounds: CGRect = msg_send![uiscreen, bounds];
                     let () = msg_send![self.window, setBounds:bounds];
-                    let () = msg_send![self.window, setScreen:uiscreen];
+
+                    // this is pretty slow on iOS, so avoid doing it if we can
+                    if uiscreen != current {
+                        let () = msg_send![self.window, setScreen:uiscreen];
+                    }
                 }
                 None => warn!("`Window::set_fullscreen(None)` ignored on iOS"),
             }

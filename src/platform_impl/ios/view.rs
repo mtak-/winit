@@ -47,7 +47,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
         extern fn draw_rect(object: &Object, _: Sel, rect: CGRect) {
             unsafe {
                 let window: id = msg_send![object, window];
-                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
+                AppState::handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::RedrawRequested,
                 });
@@ -64,7 +64,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
                     width: bounds.size.width,
                     height: bounds.size.height,
                 };
-                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
+                AppState::handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::Resized(size),
                 });
@@ -147,7 +147,7 @@ unsafe fn get_window_class() -> &'static Class {
 
         extern fn become_key_window(object: &Object, _: Sel) {
             unsafe {
-                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
+                AppState::handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::Focused(true),
                 })
@@ -156,7 +156,7 @@ unsafe fn get_window_class() -> &'static Class {
 
         extern fn resign_key_window(object: &Object, _: Sel) {
             unsafe {
-                AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
+                AppState::handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(object.into()),
                     event: WindowEvent::Focused(false),
                 })
@@ -167,6 +167,7 @@ unsafe fn get_window_class() -> &'static Class {
             unsafe {
                 let uiscreen = msg_send![object, screen];
                 let touches_enum: id = msg_send![touches, objectEnumerator];
+                let mut touch_events = Vec::new();
                 loop {
                     let touch: id = msg_send![touches_enum, nextObject];
                     if touch == nil {
@@ -184,7 +185,7 @@ unsafe fn get_window_class() -> &'static Class {
                         _ => panic!("unexpected touch phase: {:?}", phase as i32),
                     };
 
-                    AppState::get_mut().handle_nonuser_event(Event::WindowEvent {
+                    touch_events.push(Event::WindowEvent {
                         window_id: RootWindowId(object.into()),
                         event: WindowEvent::Touch(Touch {
                             device_id: RootDeviceId(DeviceId { uiscreen }),
@@ -194,29 +195,30 @@ unsafe fn get_window_class() -> &'static Class {
                         }),
                     });
                 }
+                AppState::handle_nonuser_events(touch_events);
             }
         }
 
-        extern fn set_content_scale_factor(object: &mut Object, _: Sel, factor: CGFloat) {
+        extern fn set_content_scale_factor(object: &mut Object, _: Sel, hidpi_factor: CGFloat) {
             unsafe {
-                let () = msg_send![super(object, class!(UIWindow)), setContentScaleFactor:factor];
+                let () = msg_send![super(object, class!(UIWindow)), setContentScaleFactor:hidpi_factor];
                 let view_controller: id = msg_send![object, rootViewController];
                 let view: id = msg_send![view_controller, view];
-                let () = msg_send![view, setContentScaleFactor:factor];
+                let () = msg_send![view, setContentScaleFactor:hidpi_factor];
                 let bounds: CGRect = msg_send![object, bounds];
                 let size = crate::dpi::LogicalSize {
                     width: bounds.size.width,
                     height: bounds.size.height,
                 };
-                let mut app_state = AppState::get_mut();
-                app_state.handle_nonuser_event(Event::WindowEvent {
-                    window_id: RootWindowId(object.into()),
-                    event: WindowEvent::HiDpiFactorChanged(factor as _),
-                });
-                app_state.handle_nonuser_event(Event::WindowEvent {
-                    window_id: RootWindowId(object.into()),
-                    event: WindowEvent::Resized(size),
-                });
+                AppState::handle_nonuser_events(
+                    std::iter::once(Event::WindowEvent {
+                        window_id: RootWindowId(object.into()),
+                        event: WindowEvent::HiDpiFactorChanged(hidpi_factor as _),
+                    }).chain(std::iter::once(Event::WindowEvent {
+                        window_id: RootWindowId(object.into()),
+                        event: WindowEvent::Resized(size),
+                    }))
+                );
             }
         }
 
@@ -318,20 +320,20 @@ pub unsafe fn create_window(
 pub fn create_delegate_class() {
     extern fn did_finish_launching(_: &mut Object, _: Sel, _: id, _: id) -> BOOL {
         unsafe {
-            AppState::did_finish_launching(AppState::get_mut());
+            AppState::did_finish_launching();
         }
         YES
     }
 
     extern fn did_become_active(_: &Object, _: Sel, _: id) {
         unsafe {
-            AppState::get_mut().handle_nonuser_event(Event::Suspended(false))
+            AppState::handle_nonuser_event(Event::Suspended(false))
         }
     }
 
     extern fn will_resign_active(_: &Object, _: Sel, _: id) {
         unsafe {
-            AppState::get_mut().handle_nonuser_event(Event::Suspended(true))
+            AppState::handle_nonuser_event(Event::Suspended(true))
         }
     }
 
@@ -343,18 +345,22 @@ pub fn create_delegate_class() {
             let app: id = msg_send![class!(UIApplication), sharedApplication];
             let windows: id = msg_send![app, windows];
             let windows_enum: id = msg_send![windows, objectEnumerator];
-            let mut app_state = AppState::get_mut();
+            let mut events = Vec::new();
             loop {
                 let window: id = msg_send![windows_enum, nextObject];
                 if window == nil {
                     break
                 }
-                app_state.handle_nonuser_event(Event::WindowEvent {
-                    window_id: RootWindowId(window.into()),
-                    event: WindowEvent::Destroyed,
-                });
+                let is_winit_window: BOOL = msg_send![window, isKindOfClass:class!(WinitUIWindow)];
+                if is_winit_window == YES {
+                    events.push(Event::WindowEvent {
+                        window_id: RootWindowId(window.into()),
+                        event: WindowEvent::Destroyed,
+                    });
+                }
             }
-            AppState::terminated(app_state);
+            AppState::handle_nonuser_events(events);
+            AppState::terminated();
         }
     }
 

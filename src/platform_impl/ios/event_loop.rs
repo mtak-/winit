@@ -1,7 +1,8 @@
+use std::{mem, ptr};
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
-use std::{mem, ptr};
 use std::sync::mpsc::{self, Sender, Receiver};
 
 use event::Event;
@@ -10,7 +11,6 @@ use event_loop::{
     EventLoopWindowTarget as RootEventLoopWindowTarget,
     EventLoopClosed,
 };
-
 use platform::ios::Idiom;
 
 use platform_impl::platform::app_state::AppState;
@@ -89,7 +89,7 @@ impl<T: 'static> EventLoop<T> {
             assert_eq!(application, ptr::null_mut(), "\
                 `EventLoop` cannot be `run` after a call to `UIApplicationMain` on iOS\n\
                 Note: `EventLoop::run` calls `UIApplicationMain` on iOS");
-            AppState::get_mut().will_launch(Box::new(EventLoopHandler {
+            AppState::will_launch(Box::new(EventLoopHandler {
                 f: event_handler,
                 event_loop: self.window_target,
             }));
@@ -158,11 +158,8 @@ impl<T> Drop for EventLoopProxy<T> {
 impl<T> EventLoopProxy<T> {
     fn new(sender: Sender<T>) -> EventLoopProxy<T> {
         unsafe {
-            extern "C" fn event_loop_proxy_handler(_: *mut c_void) {
-                unsafe {
-                    AppState::get_mut().handle_user_events();
-                }
-            }
+            // just wakeup the eventloop
+            extern "C" fn event_loop_proxy_handler(_: *mut c_void) {}
 
             // adding a Source to the main CFRunLoop lets us wake it up and
             // process user events through the normal OS EventLoop mechanisms.
@@ -211,7 +208,7 @@ fn setup_control_flow_observers() {
             unsafe {
                 #[allow(non_upper_case_globals)]
                 match activity {
-                    kCFRunLoopAfterWaiting => AppState::get_mut().handle_wakeup_transition(),
+                    kCFRunLoopAfterWaiting => AppState::handle_wakeup_transition(),
                     kCFRunLoopEntry => unimplemented!(), // not expected to ever happen
                     _ => unreachable!(),
                 }
@@ -228,7 +225,7 @@ fn setup_control_flow_observers() {
             unsafe {
                 #[allow(non_upper_case_globals)]
                 match activity {
-                    kCFRunLoopBeforeWaiting => AppState::get_mut().handle_events_cleared(),
+                    kCFRunLoopBeforeWaiting => AppState::handle_events_cleared(),
                     kCFRunLoopExit => unimplemented!(), // not expected to ever happen
                     _ => unreachable!(),
                 }
@@ -265,7 +262,7 @@ fn setup_control_flow_observers() {
     }
 }
 
-pub trait EventHandler {
+pub trait EventHandler: Debug {
     fn handle_nonuser_event(&mut self, event: Event<()>, control_flow: &mut ControlFlow);
     fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
 }
@@ -273,6 +270,14 @@ pub trait EventHandler {
 struct EventLoopHandler<F, T: 'static> {
     f: F,
     event_loop: RootEventLoopWindowTarget<T>,
+}
+
+impl<F, T: 'static> Debug for EventLoopHandler<F, T> {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.debug_struct("EventLoopHandler")
+            .field("event_loop", &self.event_loop)
+            .finish()
+    }
 }
 
 impl<F, T> EventHandler for EventLoopHandler<F, T>

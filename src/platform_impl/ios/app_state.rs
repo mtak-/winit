@@ -1,11 +1,12 @@
+use std::{mem, ptr};
 use std::cell::{RefCell, RefMut};
 use std::mem::ManuallyDrop;
 use std::os::raw::c_void;
-use std::{mem, ptr};
 use std::time::Instant;
 
 use event::{Event, StartCause};
 use event_loop::ControlFlow;
+
 use platform_impl::platform::event_loop::EventHandler;
 use platform_impl::platform::ffi::{
     id,
@@ -30,6 +31,7 @@ macro_rules! bug {
 }
 
 // this is the state machine for the app lifecycle
+#[derive(Debug)]
 enum AppStateImpl {
     NotLaunched {
         queued_windows: Vec<id>,
@@ -43,6 +45,10 @@ enum AppStateImpl {
     ProcessingEvents {
         event_handler: Box<EventHandler>,
         active_control_flow: ControlFlow,
+    },
+    // special state to deal with reentrancy and prevent mutable aliasing.
+    InUserCallback {
+        queued_events: Vec<Event<()>>,
     },
     Waiting {
         waiting_event_handler: Box<EventHandler>,
@@ -77,10 +83,15 @@ pub struct AppState {
 
 impl AppState {
     // requires main thread
-    pub unsafe fn get_mut() -> RefMut<'static, AppState> {
+    unsafe fn get_mut() -> RefMut<'static, AppState> {
         // basically everything in UIKit requires the main thread, so it's pointless to use the
         // std::sync APIs.
+        // must be mut because plain `static` requires `Sync`
         static mut APP_STATE: RefCell<Option<AppState>> = RefCell::new(None);
+
+        if cfg!(debug_assertions) {
+            assert_main_thread!("bug in winit: `AppState::get_mut()` can only be called on the main thread");
+        }
 
         let mut guard = APP_STATE.borrow_mut();
         if guard.is_none() {
@@ -116,173 +127,178 @@ impl AppState {
     
     // requires main thread and window is a UIWindow
     // retains window
-    pub unsafe fn set_key_window(&mut self, window: id) {
-        match &mut self.app_state {
+    pub unsafe fn set_key_window(window: id) {
+        let mut this = AppState::get_mut();
+        match &mut this.app_state {
             &mut AppStateImpl::NotLaunched { ref mut queued_windows, .. } => {
                 queued_windows.push(window);
                 msg_send![window, retain];
+                return;
             }
-            &mut AppStateImpl::ProcessingEvents { .. } => msg_send![window, makeKeyAndVisible],
+            &mut AppStateImpl::ProcessingEvents { .. } => {},
+            &mut AppStateImpl::InUserCallback { .. } => {},
             &mut AppStateImpl::Terminated => panic!("Attempt to create a `Window` \
                                                      after the app has terminated"),
-            _ => unreachable!(), // all other cases should be impossible
+            app_state => unreachable!("unexpected state: {:#?}", app_state), // all other cases should be impossible
         }
+        drop(this);
+        msg_send![window, makeKeyAndVisible]
     }
 
-    pub fn will_launch(&mut self, queued_event_handler: Box<EventHandler>) {
-        unsafe {
-            let (queued_windows, queued_events) = match &mut self.app_state {
-                &mut AppStateImpl::NotLaunched {
-                    ref mut queued_windows,
-                    ref mut queued_events,
-                } => {
-                    let windows = ptr::read(queued_windows);
-                    let events = ptr::read(queued_events);
-                    (windows, events)
-                }
-                _ => panic!("winit iOS expected the app to be in a `NotLaunched` \
-                             state, but was not - please file an issue"),
-            };
-            ptr::write(&mut self.app_state, AppStateImpl::Launching {
-                queued_windows,
-                queued_events,
-                queued_event_handler,
-            });
-        }
-    }
-
-    pub fn did_finish_launching<'b>(mut this: RefMut<'b, Self>) {
-        let (windows, events) = unsafe {
-            let (windows, events, event_handler) = match &mut this.app_state {
-                &mut AppStateImpl::Launching {
-                    ref mut queued_windows,
-                    ref mut queued_events,
-                    ref mut queued_event_handler,
-                } => {
-                    let windows = ptr::read(queued_windows);
-                    let events = ptr::read(queued_events);
-                    let event_handler = ptr::read(queued_event_handler);
-                    (windows, events, event_handler)
-                }
-                _ => panic!("winit iOS expected the app to be in a `Launching` \
-                             state, but was not - please file an issue"),
-            };
-            ptr::write(&mut this.app_state, AppStateImpl::ProcessingEvents {
-                event_handler,
-                active_control_flow: ControlFlow::Poll,
-            });
-            (windows, events)
-        };
-
-        {
-            let &mut AppState {
-                ref mut app_state,
-                ref mut control_flow,
-                ..
-            } = &mut *this;
-            let event_handler = match app_state {
-                &mut AppStateImpl::ProcessingEvents { ref mut event_handler, .. } => event_handler,
-                _ => unreachable!(),
-            };
-            event_handler.handle_nonuser_event(Event::NewEvents(StartCause::Init), control_flow);
-            for event in events {
-                event_handler.handle_nonuser_event(event, control_flow)
+    // requires main thread
+    pub unsafe fn will_launch(queued_event_handler: Box<EventHandler>) {
+        let mut this = AppState::get_mut();
+        let (queued_windows, queued_events) = match &mut this.app_state {
+            &mut AppStateImpl::NotLaunched {
+                ref mut queued_windows,
+                ref mut queued_events,
+            } => {
+                let windows = ptr::read(queued_windows);
+                let events = ptr::read(queued_events);
+                (windows, events)
             }
-            event_handler.handle_user_events(control_flow);
-        }
+            _ => panic!("winit iOS expected the app to be in a `NotLaunched` \
+                            state, but was not - please file an issue"),
+        };
+        ptr::write(&mut this.app_state, AppStateImpl::Launching {
+            queued_windows,
+            queued_events,
+            queued_event_handler,
+        });
+    }
 
+    // requires main thread
+    pub unsafe fn did_finish_launching() {
+        let mut this = AppState::get_mut();
+        let windows = match &mut this.app_state {
+            &mut AppStateImpl::Launching {
+                ref mut queued_windows,
+                ..
+            } => mem::replace(queued_windows, Vec::new()),
+            _ => panic!(
+                "winit iOS expected the app to be in a `Launching` \
+                 state, but was not - please file an issue"
+            ),
+        };
+        // have to drop RefMut because the window setup code below can trigger new events
         drop(this);
 
         for window in windows {
-            unsafe {
-                let count: NSUInteger = msg_send![window, retainCount];
-                // make sure the window is still referenced
-                if count > 1 {
-                    // Do a little screen dance here to account for windows being created before
-                    // `UIApplicationMain` is called. This fixes visual issues such as being
-                    // offcenter and sized incorrectly. Additionally, to fix orientation issues, we
-                    // gotta reset the `rootViewController`.
-                    //
-                    // relevant iOS log:
-                    // ```
-                    // [ApplicationLifecycle] Windows were created before application initialzation
-                    // completed. This may result in incorrect visual appearance.
-                    // ```
-                    let screen: id = msg_send![window, screen];
-                    let () = msg_send![screen, retain];
-                    let () = msg_send![window, setScreen:0 as id];
-                    let () = msg_send![window, setScreen:screen];
-                    let () = msg_send![screen, release];
-                    let controller: id = msg_send![window, rootViewController];
-                    let () = msg_send![window, setRootViewController:ptr::null::<()>()];
-                    let () = msg_send![window, setRootViewController:controller];
-                    let () = msg_send![window, makeKeyAndVisible];
-                }
-                let () = msg_send![window, release];
+            let count: NSUInteger = msg_send![window, retainCount];
+            // make sure the window is still referenced
+            if count > 1 {
+                // Do a little screen dance here to account for windows being created before
+                // `UIApplicationMain` is called. This fixes visual issues such as being
+                // offcenter and sized incorrectly. Additionally, to fix orientation issues, we
+                // gotta reset the `rootViewController`.
+                //
+                // relevant iOS log:
+                // ```
+                // [ApplicationLifecycle] Windows were created before application initialzation
+                // completed. This may result in incorrect visual appearance.
+                // ```
+                let screen: id = msg_send![window, screen];
+                let () = msg_send![screen, retain];
+                let () = msg_send![window, setScreen:0 as id];
+                let () = msg_send![window, setScreen:screen];
+                let () = msg_send![screen, release];
+                let controller: id = msg_send![window, rootViewController];
+                let () = msg_send![window, setRootViewController:ptr::null::<()>()];
+                let () = msg_send![window, setRootViewController:controller];
+                let () = msg_send![window, makeKeyAndVisible];
             }
+            let () = msg_send![window, release];
+        }
+
+        let mut this = AppState::get_mut();
+        let (windows, events, event_handler) = match &mut this.app_state {
+            &mut AppStateImpl::Launching {
+                ref mut queued_windows,
+                ref mut queued_events,
+                ref mut queued_event_handler,
+            } => {
+                let windows = ptr::read(queued_windows);
+                let events = ptr::read(queued_events);
+                let event_handler = ptr::read(queued_event_handler);
+                (windows, events, event_handler)
+            }
+            _ => panic!("winit iOS expected the app to be in a `Launching` \
+                        state, but was not - please file an issue"),
+        };
+        ptr::write(&mut this.app_state, AppStateImpl::ProcessingEvents {
+            event_handler,
+            active_control_flow: ControlFlow::Poll,
+        });
+        drop(this);
+        
+        let events = std::iter::once(Event::NewEvents(StartCause::Init)).chain(events);
+        AppState::handle_nonuser_events(events);
+
+        // the above window dance hack, could possibly trigger new windows to be created.
+        // we can just set those windows up normally, as they were created after didFinishLaunching
+        for window in windows {
+            let count: NSUInteger = msg_send![window, retainCount];
+            // make sure the window is still referenced
+            if count > 1 {
+                let () = msg_send![window, makeKeyAndVisible];
+            }
+            let () = msg_send![window, release];
         }
     }
 
+    // requires main thread
     // AppState::did_finish_launching handles the special transition `Init`
-    pub fn handle_wakeup_transition(&mut self) {
-        let event = match self.control_flow {
+    pub unsafe fn handle_wakeup_transition() {
+        let mut this = AppState::get_mut();
+        let event = match this.control_flow {
             ControlFlow::Poll => {
-                unsafe {
-                    debug_assert_eq!(self.control_flow, ControlFlow::Poll);
-                    let event_handler = match &mut self.app_state {
-                        &mut AppStateImpl::NotLaunched { .. } |
-                        &mut AppStateImpl::Launching { .. } => return,
-                        &mut AppStateImpl::PollFinished {
-                            ref mut waiting_event_handler,
-                        } => ptr::read(waiting_event_handler),
-                        _ => bug!("`EventHandler` unexpectedly started polling"),
-                    };
-                    ptr::write(&mut self.app_state, AppStateImpl::ProcessingEvents {
-                        event_handler,
-                        active_control_flow: ControlFlow::Poll,
-                    });
-                }
+                let event_handler = match &mut this.app_state {
+                    &mut AppStateImpl::NotLaunched { .. } |
+                    &mut AppStateImpl::Launching { .. } => return,
+                    &mut AppStateImpl::PollFinished {
+                        ref mut waiting_event_handler,
+                    } => ptr::read(waiting_event_handler),
+                    _ => bug!("`EventHandler` unexpectedly started polling"),
+                };
+                ptr::write(&mut this.app_state, AppStateImpl::ProcessingEvents {
+                    event_handler,
+                    active_control_flow: ControlFlow::Poll,
+                });
                 Event::NewEvents(StartCause::Poll)
             }
             ControlFlow::Wait => {
-                let start = unsafe {
-                    let (event_handler, start) = match &mut self.app_state {
-                        &mut AppStateImpl::NotLaunched { .. } |
-                        &mut AppStateImpl::Launching { .. } => return,
-                        &mut AppStateImpl::Waiting {
-                            ref mut waiting_event_handler,
-                            ref mut start,
-                        } => (ptr::read(waiting_event_handler), *start),
-                        _ => bug!("`EventHandler` unexpectedly woke up"),
-                    };
-                    ptr::write(&mut self.app_state, AppStateImpl::ProcessingEvents {
-                        event_handler,
-                        active_control_flow: ControlFlow::Wait,
-                    });
-                    start
+                let (event_handler, start) = match &mut this.app_state {
+                    &mut AppStateImpl::NotLaunched { .. } |
+                    &mut AppStateImpl::Launching { .. } => return,
+                    &mut AppStateImpl::Waiting {
+                        ref mut waiting_event_handler,
+                        ref mut start,
+                    } => (ptr::read(waiting_event_handler), *start),
+                    _ => bug!("`EventHandler` unexpectedly woke up"),
                 };
+                ptr::write(&mut this.app_state, AppStateImpl::ProcessingEvents {
+                    event_handler,
+                    active_control_flow: ControlFlow::Wait,
+                });
                 Event::NewEvents(StartCause::WaitCancelled {
                     start,
                     requested_resume: None,
                 })
             }
             ControlFlow::WaitUntil(requested_resume) => {
-                let start = unsafe {
-                    let (event_handler, start) = match &mut self.app_state {
-                        &mut AppStateImpl::NotLaunched { .. } |
-                        &mut AppStateImpl::Launching { .. } => return,
-                        &mut AppStateImpl::Waiting {
-                            ref mut waiting_event_handler,
-                            ref mut start,
-                        } => (ptr::read(waiting_event_handler), *start),
-                        _ => bug!("`EventHandler` unexpectedly woke up"),
-                    };
-                    ptr::write(&mut self.app_state, AppStateImpl::ProcessingEvents {
-                        event_handler,
-                        active_control_flow: ControlFlow::WaitUntil(requested_resume),
-                    });
-                    start
+                let (event_handler, start) = match &mut this.app_state {
+                    &mut AppStateImpl::NotLaunched { .. } |
+                    &mut AppStateImpl::Launching { .. } => return,
+                    &mut AppStateImpl::Waiting {
+                        ref mut waiting_event_handler,
+                        ref mut start,
+                    } => (ptr::read(waiting_event_handler), *start),
+                    _ => bug!("`EventHandler` unexpectedly woke up"),
                 };
+                ptr::write(&mut this.app_state, AppStateImpl::ProcessingEvents {
+                    event_handler,
+                    active_control_flow: ControlFlow::WaitUntil(requested_resume),
+                });
                 if Instant::now() >= requested_resume {
                     Event::NewEvents(StartCause::ResumeTimeReached {
                         start,
@@ -297,18 +313,20 @@ impl AppState {
             }
             ControlFlow::Exit => bug!("unexpected controlflow `Exit`"),
         };
-        match self {
-            &mut AppState {
-                app_state: AppStateImpl::ProcessingEvents { ref mut event_handler, .. },
-                ref mut control_flow,
-                ..
-            } => event_handler.handle_nonuser_event(event, control_flow),
-            _ => unreachable!(),
-        }
+        drop(this);
+        AppState::handle_nonuser_event(event)
     }
 
-    pub fn handle_nonuser_event(&mut self, event: Event<()>) {
-        match &mut self.app_state {
+    // requires main thread
+    pub unsafe fn handle_nonuser_event(event: Event<()>) {
+        AppState::handle_nonuser_events(std::iter::once(event))
+    }
+
+    // requires main thread
+    pub unsafe fn handle_nonuser_events<I: IntoIterator<Item = Event<()>>>(events: I) {
+        let mut this = AppState::get_mut();
+        let mut control_flow = this.control_flow;
+        let (mut event_handler, active_control_flow) = match &mut this.app_state {
             &mut AppStateImpl::Launching {
                 ref mut queued_events,
                 ..
@@ -316,59 +334,134 @@ impl AppState {
             | &mut AppStateImpl::NotLaunched {
                 ref mut queued_events,
                 ..
-            } => queued_events.push(event),
+            }
+            | &mut AppStateImpl::InUserCallback {
+                ref mut queued_events,
+                ..
+            } => {
+                queued_events.extend(events);
+                return
+            }
             &mut AppStateImpl::ProcessingEvents {
                 ref mut event_handler,
-                ..
-            } => event_handler.handle_nonuser_event(event, &mut self.control_flow),
+                ref mut active_control_flow,
+            } => (ptr::read(event_handler), *active_control_flow),
             &mut AppStateImpl::PollFinished { .. }
             | &mut AppStateImpl::Waiting { .. }
             | &mut AppStateImpl::Terminated => bug!("unexpected attempted to process an event"),
+        };
+        ptr::write(&mut this.app_state, AppStateImpl::InUserCallback {
+            queued_events: Vec::new(),
+        });
+        drop(this);
+
+        for event in events {
+            event_handler.handle_nonuser_event(event, &mut control_flow)
+        }
+        loop {
+            let mut this = AppState::get_mut();
+            let queued_events = match &mut this.app_state {
+                &mut AppStateImpl::InUserCallback {
+                    ref mut queued_events,
+                } => mem::replace(queued_events, Vec::new()),
+                _ => bug!("unexpected `AppStateImpl`"),
+            };
+            if queued_events.is_empty() {
+                this.app_state = AppStateImpl::ProcessingEvents {
+                    event_handler,
+                    active_control_flow,
+                };
+                this.control_flow = control_flow;
+                break
+            }
+            drop(this);
+            for event in queued_events {
+                event_handler.handle_nonuser_event(event, &mut control_flow)
+            }
         }
     }
 
-    pub fn handle_user_events(&mut self) {
-        match &mut self.app_state {
-            &mut AppStateImpl::Launching { .. } | &mut AppStateImpl::NotLaunched { .. } => return,
-            &mut AppStateImpl::ProcessingEvents {
-                ref mut event_handler,
-                ..
-            } => event_handler.handle_user_events(&mut self.control_flow),
-            &mut AppStateImpl::PollFinished { .. }
-            | &mut AppStateImpl::Waiting { .. }
-            | &mut AppStateImpl::Terminated => bug!("unexpected attempted to process an event"),
-        }
-    }
-
-    pub fn handle_events_cleared(&mut self) {
-        let (event_handler, old) = match &mut self.app_state {
+    // requires main thread
+    pub unsafe fn handle_user_events() {
+        let mut this = AppState::get_mut();
+        let mut control_flow = this.control_flow;
+        let (mut event_handler, active_control_flow) = match &mut this.app_state {
             &mut AppStateImpl::NotLaunched { .. } | &mut AppStateImpl::Launching { .. } => return,
             &mut AppStateImpl::ProcessingEvents {
                 ref mut event_handler,
                 ref mut active_control_flow,
-            } => unsafe {
-                (
-                    ManuallyDrop::new(ptr::read(event_handler)),
-                    *active_control_flow,
-                )
-            },
-            _ => bug!("`EventHandler` expected to be processing events, but was not"),
+            } => (ptr::read(event_handler), *active_control_flow),
+            &mut AppStateImpl::InUserCallback { .. }
+            | &mut AppStateImpl::PollFinished { .. }
+            | &mut AppStateImpl::Waiting { .. }
+            | &mut AppStateImpl::Terminated => bug!("unexpected attempted to process an event"),
+        };
+        ptr::write(&mut this.app_state, AppStateImpl::InUserCallback {
+            queued_events: Vec::new(),
+        });
+        drop(this);
+
+        event_handler.handle_user_events(&mut control_flow);
+        loop {
+            let mut this = AppState::get_mut();
+            let queued_events = match &mut this.app_state {
+                &mut AppStateImpl::InUserCallback {
+                    ref mut queued_events,
+                } => mem::replace(queued_events, Vec::new()),
+                _ => bug!("unexpected `AppStateImpl`"),
+            };
+            if queued_events.is_empty() {
+                this.app_state = AppStateImpl::ProcessingEvents {
+                    event_handler,
+                    active_control_flow,
+                };
+                this.control_flow = control_flow;
+                break
+            }
+            drop(this);
+            for event in queued_events {
+                event_handler.handle_nonuser_event(event, &mut control_flow)
+            }
+            event_handler.handle_user_events(&mut control_flow);
+        }
+    }
+
+    // requires main thread
+    pub unsafe fn handle_events_cleared() {
+        let mut this = AppState::get_mut();
+        match &mut this.app_state {
+            &mut AppStateImpl::NotLaunched { .. } | &mut AppStateImpl::Launching { .. } => return,
+            &mut AppStateImpl::ProcessingEvents { .. } => {}
+            _ => unreachable!(),
+        };
+        drop(this);
+
+        AppState::handle_user_events();
+        AppState::handle_nonuser_event(Event::EventsCleared);
+
+        let mut this = AppState::get_mut();
+        let (event_handler, old) = match &mut this.app_state {
+            &mut AppStateImpl::ProcessingEvents {
+                ref mut event_handler,
+                ref mut active_control_flow,
+            } => (ManuallyDrop::new(ptr::read(event_handler)), *active_control_flow),
+            _ => unreachable!(),
         };
 
-        let new = self.control_flow;
+        let new = this.control_flow;
         match (old, new) {
-            (ControlFlow::Poll, ControlFlow::Poll) => unsafe {
+            (ControlFlow::Poll, ControlFlow::Poll) => {
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::PollFinished {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                     },
                 )
             },
-            (ControlFlow::Wait, ControlFlow::Wait) => unsafe {
+            (ControlFlow::Wait, ControlFlow::Wait) => {
                 let start = Instant::now();
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::Waiting {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                         start,
@@ -376,82 +469,63 @@ impl AppState {
                 )
             },
             (ControlFlow::WaitUntil(old_instant), ControlFlow::WaitUntil(new_instant))
-                if old_instant == new_instant =>
-            unsafe {
+                if old_instant == new_instant => {
                 let start = Instant::now();
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::Waiting {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                         start,
                     },
                 )
             }
-            (_, ControlFlow::Wait) => unsafe {
+            (_, ControlFlow::Wait) => {
                 let start = Instant::now();
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::Waiting {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                         start,
                     },
                 );
-                self.waker.stop()
+                this.waker.stop()
             },
-            (_, ControlFlow::WaitUntil(new_instant)) => unsafe {
+            (_, ControlFlow::WaitUntil(new_instant)) => {
                 let start = Instant::now();
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::Waiting {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                         start,
                     },
                 );
-                self.waker.start_at(new_instant)
+                this.waker.start_at(new_instant)
             },
-            (_, ControlFlow::Poll) => unsafe {
+            (_, ControlFlow::Poll) => {
                 ptr::write(
-                    &mut self.app_state,
+                    &mut this.app_state,
                     AppStateImpl::PollFinished {
                         waiting_event_handler: ManuallyDrop::into_inner(event_handler),
                     },
                 );
-                self.waker.start()
+                this.waker.start()
             },
             (_, ControlFlow::Exit) => {
                 // https://developer.apple.com/library/archive/qa/qa1561/_index.html
                 // it is not possible to quit an iOS app gracefully and programatically
                 warn!("`ControlFlow::Exit` ignored on iOS");
-                self.control_flow = old
+                this.control_flow = old
             }
-        }
-        match self {
-            &mut AppState {
-                app_state:
-                    AppStateImpl::PollFinished {
-                        ref mut waiting_event_handler,
-                        ..
-                    },
-                ref mut control_flow,
-                ..
-            }
-            | &mut AppState {
-                app_state:
-                    AppStateImpl::Waiting {
-                        ref mut waiting_event_handler,
-                        ..
-                    },
-                ref mut control_flow,
-                ..
-            } => waiting_event_handler.handle_nonuser_event(Event::EventsCleared, control_flow),
-            _ => unreachable!(),
         }
     }
 
-    pub fn terminated<'a>(mut this: RefMut<'a, AppState>) {
+    pub fn terminated() {
+        let mut this = unsafe { AppState::get_mut() };
         let mut old = mem::replace(&mut this.app_state, AppStateImpl::Terminated);
+        let mut control_flow = this.control_flow;
         if let AppStateImpl::ProcessingEvents { ref mut event_handler, .. } = old {
-            event_handler.handle_nonuser_event(Event::LoopDestroyed, &mut this.control_flow)
+            drop(this);
+            event_handler.handle_nonuser_event(Event::LoopDestroyed, &mut control_flow)
         } else {
             bug!("`LoopDestroyed` happened while not processing events")
         }
