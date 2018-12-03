@@ -52,7 +52,7 @@ unsafe impl Sync for Window {}
 
 impl Window {
     pub fn new<T>(
-        _event_loop: &EventLoopWindowTarget<T>,
+        event_loop: &EventLoopWindowTarget<T>,
         window_attributes: WindowAttributes,
         platform_attributes: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {
@@ -86,9 +86,7 @@ impl Window {
             let view_controller = view::create_view_controller(&window_attributes, &platform_attributes, view);
             let window = view::create_window(&window_attributes, &platform_attributes, bounds, view_controller);
 
-            // let mut guard = AppState::get_mut();
-            // let supports_safe_area = guard.capabilities().supports_safe_area;
-            let supports_safe_area = true;
+            let supports_safe_area = event_loop.capabilities().supports_safe_area;
 
             let result = Window {
                 window,

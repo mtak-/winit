@@ -36,6 +36,7 @@ use platform_impl::platform::ffi::{
     kCFRunLoopBeforeWaiting,
     kCFRunLoopAfterWaiting,
     kCFRunLoopExit,
+    NSOperatingSystemVersion,
     NSString,
     UIApplicationMain,
     UIUserInterfaceIdiom,
@@ -47,6 +48,13 @@ use platform_impl::platform::view;
 pub struct EventLoopWindowTarget<T: 'static> {
     receiver: Receiver<T>,
     sender_to_clone: Sender<T>,
+    capabilities: Capabilities,
+}
+
+impl<T: 'static> EventLoopWindowTarget<T> {
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
 }
 
 pub struct EventLoop<T: 'static> {
@@ -69,11 +77,18 @@ impl<T: 'static> EventLoop<T> {
         // this line sets up the main run loop before `UIApplicationMain`
         setup_control_flow_observers();
 
+        let version: NSOperatingSystemVersion = unsafe {
+            let process_info: id = msg_send![class!(NSProcessInfo), processInfo];
+            msg_send![process_info, operatingSystemVersion]
+        };
+        let capabilities = version.into();
+
         EventLoop {
             window_target: RootEventLoopWindowTarget {
                 p: EventLoopWindowTarget {
                     receiver,
                     sender_to_clone,
+                    capabilities,
                 },
                 _marker: PhantomData,
             }
@@ -310,4 +325,18 @@ pub unsafe fn get_idiom() -> Idiom {
     let device: id = msg_send![class!(UIDevice), currentDevice];
     let raw_idiom: UIUserInterfaceIdiom = msg_send![device, userInterfaceIdiom];
     raw_idiom.into()
+}
+
+pub struct Capabilities {
+    pub supports_safe_area: bool,
+}
+
+impl From<NSOperatingSystemVersion> for Capabilities {
+    fn from(os_version: NSOperatingSystemVersion) -> Capabilities {
+        assert!(os_version.major >= 8, "`winit` current requires iOS version 8 or greater");
+
+        let supports_safe_area = os_version.major >= 11;
+
+        Capabilities { supports_safe_area }
+    }
 }
