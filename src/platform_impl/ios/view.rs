@@ -142,6 +142,8 @@ unsafe fn get_view_controller_class() -> &'static Class {
 unsafe fn get_window_class() -> &'static Class {
     static mut CLASS: Option<&'static Class> = None;
     if CLASS.is_none() {
+        let uiwindow_class = class!(UIWindow);
+
         extern fn become_key_window(object: &Object, _: Sel) {
             unsafe {
                 AppState::handle_nonuser_event(Event::WindowEvent {
