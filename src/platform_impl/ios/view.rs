@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::mem;
 
 use objc::declare::ClassDecl;
 use objc::runtime::{BOOL, Class, NO, Object, Sel, YES};
@@ -51,8 +50,8 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::RedrawRequested,
                 });
-                let superclass: id = msg_send![object, superclass];
-                let () = msg_send![super(object, mem::transmute(superclass)), drawRect: rect];
+                let superclass: &'static Class = msg_send![object, superclass];
+                let () = msg_send![super(object, superclass), drawRect: rect];
             }
         }
 
@@ -68,8 +67,8 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
                     window_id: RootWindowId(window.into()),
                     event: WindowEvent::Resized(size),
                 });
-                let superclass: id = msg_send![object, superclass];
-                let () = msg_send![super(object, mem::transmute(superclass)), layoutSubviews];
+                let superclass: &'static Class = msg_send![object, superclass];
+                let () = msg_send![super(object, superclass), layoutSubviews];
             }
         }
 
