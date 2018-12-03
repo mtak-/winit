@@ -164,6 +164,7 @@ impl<T> EventLoopProxy<T> {
             // adding a Source to the main CFRunLoop lets us wake it up and
             // process user events through the normal OS EventLoop mechanisms.
             let rl = CFRunLoopGetMain();
+            // we want all the members of context to be zero/null, except one
             let mut context: CFRunLoopSourceContext = mem::zeroed();
             context.perform = event_loop_proxy_handler;
             let source = CFRunLoopSourceCreate(
