@@ -7,7 +7,7 @@ use std::time::Instant;
 use event::{Event, StartCause};
 use event_loop::ControlFlow;
 
-use platform_impl::platform::event_loop::EventHandler;
+use platform_impl::platform::event_loop::{EventHandler, Never};
 use platform_impl::platform::ffi::{
     id,
     CFAbsoluteTimeGetCurrent,
@@ -34,11 +34,11 @@ macro_rules! bug {
 enum AppStateImpl {
     NotLaunched {
         queued_windows: Vec<id>,
-        queued_events: Vec<Event<()>>,
+        queued_events: Vec<Event<Never>>,
     },
     Launching {
         queued_windows: Vec<id>,
-        queued_events: Vec<Event<()>>,
+        queued_events: Vec<Event<Never>>,
         queued_event_handler: Box<EventHandler>,
     },
     ProcessingEvents {
@@ -47,7 +47,7 @@ enum AppStateImpl {
     },
     // special state to deal with reentrancy and prevent mutable aliasing.
     InUserCallback {
-        queued_events: Vec<Event<()>>,
+        queued_events: Vec<Event<Never>>,
     },
     Waiting {
         waiting_event_handler: Box<EventHandler>,
@@ -306,12 +306,12 @@ impl AppState {
     }
 
     // requires main thread
-    pub unsafe fn handle_nonuser_event(event: Event<()>) {
+    pub unsafe fn handle_nonuser_event(event: Event<Never>) {
         AppState::handle_nonuser_events(std::iter::once(event))
     }
 
     // requires main thread
-    pub unsafe fn handle_nonuser_events<I: IntoIterator<Item = Event<()>>>(events: I) {
+    pub unsafe fn handle_nonuser_events<I: IntoIterator<Item = Event<Never>>>(events: I) {
         let mut this = AppState::get_mut();
         let mut control_flow = this.control_flow;
         let (mut event_handler, active_control_flow) = match &mut this.app_state {

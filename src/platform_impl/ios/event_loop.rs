@@ -278,8 +278,11 @@ fn setup_control_flow_observers() {
     }
 }
 
+#[derive(Debug)]
+pub enum Never {}
+
 pub trait EventHandler: Debug {
-    fn handle_nonuser_event(&mut self, event: Event<()>, control_flow: &mut ControlFlow);
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow);
     fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
 }
 
@@ -301,9 +304,9 @@ where
     F: 'static + FnMut(Event<T>, &RootEventLoopWindowTarget<T>, &mut ControlFlow),
     T: 'static,
 {
-    fn handle_nonuser_event(&mut self, event: Event<()>, control_flow: &mut ControlFlow) {
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow) {
         (self.f)(
-            event.map_nonuser_event().expect("unexpectedly attempted to process a user event"),
+            event.map_nonuser_event().unwrap(),
             &self.event_loop,
             control_flow,
         );

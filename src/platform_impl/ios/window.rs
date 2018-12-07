@@ -391,7 +391,7 @@ impl Default for PlatformSpecificWindowBuilderAttributes {
         PlatformSpecificWindowBuilderAttributes {
             root_view_class: class!(UIView),
             hidpi_factor: None,
-            valid_orientations: ValidOrientations::LandscapeAndPortrait,
+            valid_orientations: Default::default(),
         }
     }
 }

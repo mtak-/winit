@@ -135,6 +135,13 @@ pub enum ValidOrientations {
     Portrait,
 }
 
+impl Default for ValidOrientations {
+    #[inline]
+    fn default() -> ValidOrientations {
+        ValidOrientations::LandscapeAndPortrait
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Idiom {
     Unspecified,
