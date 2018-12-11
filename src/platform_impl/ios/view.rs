@@ -43,7 +43,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
         let is_uiview: BOOL = msg_send![root_view_class, isSubclassOfClass:uiview_class];
         assert_eq!(is_uiview, YES, "`root_view_class` must inherit from `UIView`");
 
-        extern fn draw_rect(object: &Object, _: Sel, rect: CGRect) {
+        extern fn draw_layer_in_context(object: &Object, _: Sel, layer: id, context: id) {
             unsafe {
                 let window: id = msg_send![object, window];
                 AppState::handle_nonuser_event(Event::WindowEvent {
@@ -51,7 +51,7 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
                     event: WindowEvent::RedrawRequested,
                 });
                 let superclass: &'static Class = msg_send![object, superclass];
-                let () = msg_send![super(object, superclass), drawRect: rect];
+                let () = msg_send![super(object, superclass), drawLayer:layer inContext:context];
             }
         }
 
@@ -75,8 +75,8 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
         let mut decl = ClassDecl::new(&format!("WinitUIView{}", ID), root_view_class)
             .expect("Failed to declare class `WinitUIView`");
         ID += 1;
-        decl.add_method(sel!(drawRect:),
-                        draw_rect as extern fn(&Object, Sel, CGRect));
+        decl.add_method(sel!(drawLayer:inContext:),
+                        draw_layer_in_context as extern fn(&Object, Sel, id, id));
         decl.add_method(sel!(layoutSubviews),
                         layout_subviews as extern fn(&Object, Sel));
         decl.register()

@@ -120,7 +120,10 @@ impl Window {
     pub fn request_redraw(&self) {
         unsafe {
             assert_main_thread!("`Window::request_redraw` can only be called on the main thread on iOS");
-            let () = msg_send![self.view, setNeedsDisplay];
+            let layer: id = msg_send![self.view, layer];
+            if !layer.is_null() {
+                let () = msg_send![layer, setNeedsDisplay];
+            }
         }
     }
     
