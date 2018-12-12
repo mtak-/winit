@@ -17,6 +17,7 @@ use platform_impl::platform::app_state::AppState;
 use platform_impl::platform::ffi::{
     id,
     nil,
+    CFIndex,
     CFRelease,
     CFRunLoopActivity,
     CFRunLoopAddObserver,
@@ -184,11 +185,7 @@ impl<T> EventLoopProxy<T> {
             context.perform = event_loop_proxy_handler;
             let source = CFRunLoopSourceCreate(
                 ptr::null_mut(),
-                if cfg!(target_pointer_width = "32") {
-                    (std::i32::MAX - 1) as _
-                } else {
-                    (std::i64::MAX - 1) as _
-                },
+                CFIndex::max_value() - 1,
                 &mut context,
             );
             CFRunLoopAddSource(rl, source, kCFRunLoopCommonModes);
@@ -253,11 +250,7 @@ fn setup_control_flow_observers() {
             ptr::null_mut(),
             kCFRunLoopEntry | kCFRunLoopAfterWaiting,
             1, // repeat = true
-            if cfg!(target_pointer_width = "32") {
-                std::i32::MIN as _
-            } else {
-                std::i64::MIN as _
-            },
+            CFIndex::min_value(),
             control_flow_begin_handler,
             ptr::null_mut(),
         );
@@ -266,11 +259,7 @@ fn setup_control_flow_observers() {
             ptr::null_mut(),
             kCFRunLoopExit | kCFRunLoopBeforeWaiting,
             1, // repeat = true
-            if cfg!(target_pointer_width = "32") {
-                std::i32::MAX as _
-            } else {
-                std::i64::MAX as _
-            },
+            CFIndex::max_value(),
             control_flow_end_handler,
             ptr::null_mut(),
         );
