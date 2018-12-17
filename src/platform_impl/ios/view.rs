@@ -58,10 +58,13 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
         extern fn layout_subviews(object: &Object, _: Sel) {
             unsafe {
                 let window: id = msg_send![object, window];
-                let bounds: CGRect = msg_send![object, bounds];
+                let bounds: CGRect = msg_send![window, bounds];
+                let screen: id = msg_send![window, screen];
+                let screen_space: id = msg_send![screen, coordinateSpace];
+                let screen_frame: CGRect = msg_send![object, convertRect:bounds toCoordinateSpace:screen_space];
                 let size = crate::dpi::LogicalSize {
-                    width: bounds.size.width,
-                    height: bounds.size.height,
+                    width: screen_frame.size.width,
+                    height: screen_frame.size.height,
                 };
                 AppState::handle_nonuser_event(Event::WindowEvent {
                     window_id: RootWindowId(window.into()),
@@ -207,9 +210,12 @@ unsafe fn get_window_class() -> &'static Class {
                 let view: id = msg_send![view_controller, view];
                 let () = msg_send![view, setContentScaleFactor:hidpi_factor];
                 let bounds: CGRect = msg_send![object, bounds];
+                let screen: id = msg_send![object, screen];
+                let screen_space: id = msg_send![screen, coordinateSpace];
+                let screen_frame: CGRect = msg_send![object, convertRect:bounds toCoordinateSpace:screen_space];
                 let size = crate::dpi::LogicalSize {
-                    width: bounds.size.width,
-                    height: bounds.size.height,
+                    width: screen_frame.size.width,
+                    height: screen_frame.size.height,
                 };
                 AppState::handle_nonuser_events(
                     std::iter::once(Event::WindowEvent {
@@ -251,13 +257,13 @@ unsafe fn get_window_class() -> &'static Class {
 pub unsafe fn create_view(
     window_attributes: &WindowAttributes,
     platform_attributes: &PlatformSpecificWindowBuilderAttributes,
-    bounds: CGRect,
+    frame: CGRect,
 ) -> id {
     let class = get_view_class(platform_attributes.root_view_class);
 
     let view: id = msg_send![class, alloc];
     assert!(!view.is_null(), "Failed to create `UIView` instance");
-    let view: id = msg_send![view, initWithFrame:bounds];
+    let view: id = msg_send![view, initWithFrame:frame];
     assert!(!view.is_null(), "Failed to initialize `UIView` instance");
     if window_attributes.multitouch {
         let () = msg_send![view, setMultipleTouchEnabled:YES];
@@ -298,14 +304,14 @@ pub unsafe fn create_view_controller(
 pub unsafe fn create_window(
     window_attributes: &WindowAttributes,
     platform_attributes: &PlatformSpecificWindowBuilderAttributes,
-    bounds: CGRect,
+    frame: CGRect,
     view_controller: id,
 ) -> id {
     let class = get_window_class();
 
     let window: id = msg_send![class, alloc];
     assert!(!window.is_null(), "Failed to create `UIWindow` instance");
-    let window: id = msg_send![window, initWithFrame:bounds];
+    let window: id = msg_send![window, initWithFrame:frame];
     assert!(!window.is_null(), "Failed to initialize `UIWindow` instance");
     let () = msg_send![window, setRootViewController:view_controller];
     if let Some(hidpi_factor) = platform_attributes.hidpi_factor {
