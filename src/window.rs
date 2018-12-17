@@ -283,18 +283,7 @@ impl WindowBuilder {
     /// Error should be very rare and only occur in case of permission denied, incompatible system,
     /// out of memory, etc.
     #[inline]
-    pub fn build<T: 'static>(mut self, window_target: &EventLoopWindowTarget<T>) -> Result<Window, CreationError> {
-        self.window.dimensions = Some(self.window.dimensions.unwrap_or_else(|| {
-            if let Some(ref monitor) = self.window.fullscreen {
-                // resizing the window to the dimensions of the monitor when fullscreen
-                LogicalSize::from_physical(monitor.get_dimensions(), 1.0)
-            } else {
-                // default dimensions
-                (1024, 768).into()
-            }
-        }));
-
-        // building
+    pub fn build<T: 'static>(self, window_target: &EventLoopWindowTarget<T>) -> Result<Window, CreationError> {
         platform_impl::Window::new(
             &window_target.p,
             self.window,
