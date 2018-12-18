@@ -162,9 +162,16 @@ impl<T> Deref for EventLoop<T> {
 }
 
 /// Used to send custom events to `EventLoop`.
-#[derive(Clone)]
 pub struct EventLoopProxy<T> {
     event_loop_proxy: platform_impl::EventLoopProxy<T>,
+}
+
+impl<T> Clone for EventLoopProxy<T> {
+    fn clone(&self) -> Self {
+        EventLoopProxy {
+            event_loop_proxy: self.event_loop_proxy.clone()
+        }
+    }
 }
 
 impl<T> EventLoopProxy<T> {
