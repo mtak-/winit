@@ -369,7 +369,7 @@ impl Window {
         } else {
             let screen_frame = self.to_screen_space(bounds);
             let status_bar_frame: CGRect = {
-                let app: id = msg_send![class!(UIApplication), sharedApplicaton];
+                let app: id = msg_send![class!(UIApplication), sharedApplication];
                 assert!(!app.is_null(), "`Window::get_inner_position` cannot be called before `EventLoop::run` on iOS");
                 msg_send![app, statusBarFrame]
             };
