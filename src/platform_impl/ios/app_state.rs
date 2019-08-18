@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    event::{Event, StartCause},
+    event::{Event, StartCause, WindowEvent},
     event_loop::ControlFlow,
 };
 
@@ -46,6 +46,10 @@ enum AppStateImpl {
     // special state to deal with reentrancy and prevent mutable aliasing.
     InUserCallback {
         queued_events: Vec<Event<Never>>,
+    },
+    MainEventsCleared {
+        event_handler: Box<dyn EventHandler>,
+        active_control_flow: ControlFlow,
     },
     Waiting {
         waiting_event_handler: Box<dyn EventHandler>,
@@ -130,8 +134,9 @@ impl AppState {
                 let _: id = msg_send![window, retain];
                 return;
             }
-            &mut AppStateImpl::ProcessingEvents { .. } => {}
-            &mut AppStateImpl::InUserCallback { .. } => {}
+            &mut AppStateImpl::ProcessingEvents { .. }
+            | &mut AppStateImpl::InUserCallback { .. }
+            | &mut AppStateImpl::MainEventsCleared { .. } => {}
             &mut AppStateImpl::Terminated => panic!(
                 "Attempt to create a `Window` \
                  after the app has terminated"
@@ -343,7 +348,8 @@ impl AppState {
     pub unsafe fn handle_nonuser_events<I: IntoIterator<Item = Event<Never>>>(events: I) {
         let mut this = AppState::get_mut();
         let mut control_flow = this.control_flow;
-        let (mut event_handler, active_control_flow) = match &mut this.app_state {
+        let (mut event_handler, active_control_flow, after_main_events) = match &mut this.app_state
+        {
             &mut AppStateImpl::Launching {
                 ref mut queued_events,
                 ..
@@ -362,7 +368,11 @@ impl AppState {
             &mut AppStateImpl::ProcessingEvents {
                 ref mut event_handler,
                 ref mut active_control_flow,
-            } => (ptr::read(event_handler), *active_control_flow),
+            } => (ptr::read(event_handler), *active_control_flow, false),
+            &mut AppStateImpl::MainEventsCleared {
+                ref mut event_handler,
+                ref mut active_control_flow,
+            } => (ptr::read(event_handler), *active_control_flow, true),
             &mut AppStateImpl::PollFinished { .. }
             | &mut AppStateImpl::Waiting { .. }
             | &mut AppStateImpl::Terminated => bug!("unexpected attempted to process an event"),
@@ -376,6 +386,9 @@ impl AppState {
         drop(this);
 
         for event in events {
+            if !after_main_events && is_redraw(&event) {
+                log::warn!("processing `RedrawRequested` during the main event loop");
+            }
             event_handler.handle_nonuser_event(event, &mut control_flow)
         }
         loop {
@@ -387,15 +400,25 @@ impl AppState {
                 _ => bug!("unexpected `AppStateImpl`"),
             };
             if queued_events.is_empty() {
-                this.app_state = AppStateImpl::ProcessingEvents {
-                    event_handler,
-                    active_control_flow,
+                this.app_state = if after_main_events {
+                    AppStateImpl::MainEventsCleared {
+                        event_handler,
+                        active_control_flow,
+                    }
+                } else {
+                    AppStateImpl::ProcessingEvents {
+                        event_handler,
+                        active_control_flow,
+                    }
                 };
                 this.control_flow = control_flow;
                 break;
             }
             drop(this);
             for event in queued_events {
+                if !after_main_events && is_redraw(&event) {
+                    log::warn!("processing `RedrawRequested` during the main event loop");
+                }
                 event_handler.handle_nonuser_event(event, &mut control_flow)
             }
         }
@@ -405,12 +428,17 @@ impl AppState {
     pub unsafe fn handle_user_events() {
         let mut this = AppState::get_mut();
         let mut control_flow = this.control_flow;
-        let (mut event_handler, active_control_flow) = match &mut this.app_state {
+        let (mut event_handler, active_control_flow, after_main_events) = match &mut this.app_state
+        {
             &mut AppStateImpl::NotLaunched { .. } | &mut AppStateImpl::Launching { .. } => return,
             &mut AppStateImpl::ProcessingEvents {
                 ref mut event_handler,
                 ref mut active_control_flow,
-            } => (ptr::read(event_handler), *active_control_flow),
+            } => (ptr::read(event_handler), *active_control_flow, false),
+            &mut AppStateImpl::MainEventsCleared {
+                ref mut event_handler,
+                ref mut active_control_flow,
+            } => (ptr::read(event_handler), *active_control_flow, true),
             &mut AppStateImpl::InUserCallback { .. }
             | &mut AppStateImpl::PollFinished { .. }
             | &mut AppStateImpl::Waiting { .. }
@@ -434,9 +462,16 @@ impl AppState {
                 _ => bug!("unexpected `AppStateImpl`"),
             };
             if queued_events.is_empty() {
-                this.app_state = AppStateImpl::ProcessingEvents {
-                    event_handler,
-                    active_control_flow,
+                this.app_state = if after_main_events {
+                    AppStateImpl::MainEventsCleared {
+                        event_handler,
+                        active_control_flow,
+                    }
+                } else {
+                    AppStateImpl::ProcessingEvents {
+                        event_handler,
+                        active_control_flow,
+                    }
                 };
                 this.control_flow = control_flow;
                 break;
@@ -450,12 +485,12 @@ impl AppState {
     }
 
     // requires main thread
-    pub unsafe fn handle_events_cleared() {
+    pub unsafe fn handle_main_events_cleared() {
         let mut this = AppState::get_mut();
         match &mut this.app_state {
             &mut AppStateImpl::NotLaunched { .. } | &mut AppStateImpl::Launching { .. } => return,
             &mut AppStateImpl::ProcessingEvents { .. } => {}
-            _ => unreachable!(),
+            e => unreachable!("{:?}", e),
         };
         drop(this);
 
@@ -463,8 +498,30 @@ impl AppState {
         AppState::handle_nonuser_event(Event::EventsCleared);
 
         let mut this = AppState::get_mut();
-        let (event_handler, old) = match &mut this.app_state {
+        let (event_handler, active_control_flow) = match &mut this.app_state {
             &mut AppStateImpl::ProcessingEvents {
+                ref mut event_handler,
+                ref mut active_control_flow,
+            } => (ptr::read(event_handler), *active_control_flow),
+            _ => unreachable!(),
+        };
+        ptr::write(
+            &mut this.app_state,
+            AppStateImpl::MainEventsCleared {
+                event_handler,
+                active_control_flow,
+            },
+        );
+
+        drop(this);
+    }
+
+    // requires main thread
+    pub unsafe fn handle_events_cleared() {
+        let mut this = AppState::get_mut();
+        let (event_handler, old) = match &mut this.app_state {
+            &mut AppStateImpl::NotLaunched { .. } | &mut AppStateImpl::Launching { .. } => return,
+            &mut AppStateImpl::MainEventsCleared {
                 ref mut event_handler,
                 ref mut active_control_flow,
             } => (
@@ -669,4 +726,16 @@ pub fn capabilities() -> Capabilities {
         };
     }
     CAPABILITIES.clone()
+}
+
+fn is_redraw(event: &Event<Never>) -> bool {
+    if let Event::WindowEvent {
+        window_id: _,
+        event: WindowEvent::RedrawRequested,
+    } = &event
+    {
+        true
+    } else {
+        false
+    }
 }
